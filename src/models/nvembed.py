@@ -1,0 +1,349 @@
+import torch
+import torch.nn.functional as F
+from transformers import AutoModel, AutoTokenizer#, BitsAndBytesConfig
+import pandas as pd
+import numpy as np
+import time
+import json
+import gzip
+import os
+from tqdm.auto import tqdm
+
+from src.indexing.faiss_indexer import FaissIndexer
+from src.data_handler import DataHandler
+from src.configs.models import MODELS
+from src.evaluator import Evaluator
+
+import shutil  # if you also want archival like in run.py
+from src.misc import save_dense_embeddings, load_dense_embeddings
+
+DATASET_MAPPING = {
+    "irds:msmarco-passage/dev/small": "irds:msmarco-passage/dev/small",
+    "irds:msmarco-passage/trec-dl-2019/judged": "irds:msmarco-passage/dev/small",
+    "irds:msmarco-passage/trec-dl-2020/judged": "irds:msmarco-passage/dev/small",
+}
+ARCHIVE_ROOT = "/dataHDD1/masterthesis"
+
+class NVEmbedEncoder:
+    """
+    Handles loading and encoding using the NV-Embed-v2 model.
+    """
+    def __init__(self, model_key: str, config: dict = None, device: str = "cuda"):
+        """Initializes the NVEmbedEncoder."""
+        self.model_key = model_key
+        self.model_name = MODELS[model_key]["model_path"]
+        self.config = config or {}
+        self.device_str = device
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.model = None
+        self.tokenizer = None
+        #self.bnb_cfg = BitsAndBytesConfig(
+        #    load_in_4bit=True,
+        #    bnb_4bit_quant_type="nf4",
+        #    bnb_4bit_compute_dtype=torch.float16,
+        #    bnb_4bit_use_double_quant=True
+        #)
+        self.max_length = 32768
+        
+        self._load_model()
+
+    def _load_model(self):
+        """Loads the tokenizer and the NV-Embed-v2 model."""
+        print(f"Loading NV-Embed model: {self.model_name}")
+
+        # --- Step 1: Load tokenizer ---
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+            use_fast=True
+        )
+
+        # --- Step 2: Load model ---
+        self.model = AutoModel.from_pretrained(
+            self.model_name,
+            #quantization_config=self.bnb_cfg,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            device_map="auto",
+        )
+        
+        # --- Step 3: Move to device and set to eval mode ---
+        #self.model.to(self.device)
+        self.model.eval()
+        
+        print(f"NV-Embed model loaded successfully and moved to {self.device}.")
+
+
+    def encode(self, texts, is_query=False, batch_size=4, show_progress_bar=True):
+        """
+        Encodes a list of texts using the loaded NV-Embed-v2 model.
+        This method now handles manual batching, tokenization, model inference, and pooling.
+        """
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Model is not loaded. Call _load_model() first (should happen in __init__).")
+
+        # Determine the instruction prefix (e.g., "query: " or "passage: ")
+        instruction = self.config.get('query_instruction') if is_query else self.config.get('doc_instruction')
+        if instruction is None:
+            instruction = ""
+        
+        all_embeddings = []
+        desc = "Encoding Queries" if is_query else "Encoding Documents"
+
+        for i in tqdm(range(0, len(texts), batch_size), desc=desc, disable=not show_progress_bar):
+            batch_texts = texts[i:i + batch_size]
+
+            with torch.no_grad():
+                batch_embs = self.model.encode(
+                    batch_texts,
+                    instruction=instruction,
+                    max_length=self.max_length,
+                )
+
+            # Convert to torch tensor if returned as numpy
+            if isinstance(batch_embs, np.ndarray):
+                batch_embs = torch.from_numpy(batch_embs)
+            elif not isinstance(batch_embs, torch.Tensor):
+                raise TypeError(f"Unexpected embedding type from model.encode: {type(batch_embs)}")
+
+            all_embeddings.append(batch_embs)
+
+        if not all_embeddings:
+            hidden_size = self.model.config.hidden_size
+            return torch.empty(0, hidden_size).cpu()
+
+        # Concatenate all batches
+        embeddings = torch.cat(all_embeddings, dim=0)
+
+        # Normalize to unit length (recommended for cosine retrieval)
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+
+        # Move to CPU for FAISS / further use
+        return embeddings.detach().cpu()
+
+        
+    def run(self, model: str, handler: DataHandler, ds: str, device: str, top_k: int = 1001, variant: str | None = None, save_report: bool = False, archive: bool = True):
+        """
+        Run NV-Embed in the same style as run.py:
+        - dataset / corpus mapping
+        - corpus embedding caching
+        - FAISS search
+        - timing dict
+        - results + scores compatible with other models
+        """
+
+        # ---------------------------
+        # 0. Dataset / corpus mapping
+        # ---------------------------
+        dataset_id = ds
+        dataset_label = dataset_id.replace("/", "_").replace(":", "_")
+        if variant:
+            dataset_label = f"{dataset_label}_{variant}"
+
+        corpus_id = DATASET_MAPPING.get(dataset_id, dataset_id)
+        corpus_label = corpus_id.replace("/", "_").replace(":", "_")
+        corpus_variant = variant if corpus_id == dataset_id else None
+
+        # Skip if scores already exist
+        scores_dir = f"outputs/scores/{self.model_key}"
+        os.makedirs(scores_dir, exist_ok=True)
+        scores_path = os.path.join(scores_dir, f"{dataset_label}.json")
+        if os.path.exists(scores_path):
+            print(f"Score found at {scores_path}. Skipping NV-Embed run...")
+            # If you want, you can load & return here; for now just skip.
+            return None
+
+        start_time = time.time()
+
+        timing = {
+            "doc_encoding_seconds": 0.0,
+            "index_build_seconds": 0.0,
+            "query_encoding_seconds": 0.0,
+            "search_seconds": 0.0,
+            "rerank_seconds": 0.0,
+            "num_queries": 0,
+        }
+
+        print(f"--- Running Benchmark (NV-Embed) ---")
+        print(f"Model: {self.model_key} | Checkpoint: {self.model_name} | Dataset: {dataset_label}")
+
+        # ---------------------------
+        # 1. Load pre-saved dataset
+        # ---------------------------
+        # Queries & qrels always from the evaluation dataset
+        _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)
+        queries = pd.DataFrame(list(queries_iter))
+        qrels   = pd.DataFrame(list(qrels_iter))
+
+        # Docs from the underlying corpus
+        docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant)
+        docs = pd.DataFrame(list(docs_iter))
+
+        doc_ids    = docs["doc_id"].astype(str).tolist()
+        doc_texts  = docs["text"].tolist()
+        doc_titles = docs["title"].tolist() if "title" in docs.columns else None
+
+        query_ids   = queries["query_id"].astype(str).tolist()
+        query_texts = queries["text"].tolist()
+
+        timing["num_queries"] = len(query_ids)
+
+        # ---------------------------
+        # 2. Encode / cache corpus
+        # ---------------------------
+        out_dir = f"outputs/embeddings/{self.model_key}"
+        os.makedirs(out_dir, exist_ok=True)
+        emb_path = os.path.join(out_dir, f"{corpus_label}.npz")
+
+        if os.path.exists(emb_path):
+            print(f"Loading cached corpus embeddings from {emb_path}")
+            corpus_embeddings = load_dense_embeddings(emb_path)
+        else:
+            print(f"No cached corpus embeddings at {emb_path}, encoding corpus with NV-Embed...")
+            t0 = time.time()
+            corpus_embeddings = self.encode(
+                texts=doc_texts,
+                is_query=False,
+                batch_size=8,
+                show_progress_bar=True,
+            )
+            timing["doc_encoding_seconds"] += time.time() - t0
+            
+            # Save if MS MARCO
+            if dataset_id == "irds:msmarco-passage/dev/small":
+                save_dense_embeddings(corpus_embeddings, emb_path)
+
+        # ---------------------------
+        # 3. Encode queries
+        # ---------------------------
+        t0 = time.time()
+        query_embeddings = self.encode(
+            texts=query_texts,
+            is_query=True,
+            batch_size=8,
+            show_progress_bar=True,
+        )
+        timing["query_encoding_seconds"] += time.time() - t0
+
+        # ---------------------------
+        # 4. FAISS index + search
+        # ---------------------------
+        indexer = FaissIndexer(dimension=corpus_embeddings.shape[1])
+        t0 = time.time()
+        indexer.build(corpus_embeddings)
+        timing["index_build_seconds"] += time.time() - t0
+
+        t0 = time.time()
+        scores, indices = indexer.search(query_embeddings, top_k=top_k)
+        timing["search_seconds"] += time.time() - t0
+
+        results = {
+            qid: {doc_ids[idx]: float(score) for idx, score in zip(indices[i], scores[i])}
+            for i, qid in enumerate(query_ids)
+        }
+
+        # ---------------------------
+        # 5. Save results (like run.py)
+        # ---------------------------
+        results_dir = f"outputs/results/{self.model_key}"
+        os.makedirs(results_dir, exist_ok=True)
+        results_path = os.path.join(results_dir, f"{dataset_label}.json")
+        with gzip.open(results_path, "wt", encoding="utf-8") as f:
+            json.dump(results, f)
+        print(f"Saved search results to {results_path}")
+
+        # ---------------------------
+        # 6. Evaluate
+        # ---------------------------
+        evaluator = Evaluator(dataset_id, skip_self_matches="auto")
+        eval_start = time.time()
+        metrics_agg, metrics_perq, summary_stats = evaluator.evaluate(qrels, results)
+        evaluation_seconds = time.time() - eval_start
+
+        print(f"\n--- Results for model {self.model_key} ---")
+        print(pd.DataFrame([metrics_agg]))
+
+        end_time = time.time()
+        elapsed = end_time - start_time
+
+        # latency
+        if timing["num_queries"] > 0 and timing["search_seconds"] > 0:
+            avg_latency_ms = (timing["search_seconds"] / timing["num_queries"]) * 1000.0
+        else:
+            avg_latency_ms = None
+
+        timing["avg_latency_ms"] = avg_latency_ms
+        timing["evaluation_seconds"] = float(evaluation_seconds)
+        timing["runtime_seconds"] = float(elapsed)
+
+        print(f"This run took {float(elapsed)} seconds.")
+        if avg_latency_ms is not None:
+            print(f"Average query latency: {avg_latency_ms:.2f} ms/query "
+                  f"over {timing['num_queries']} queries.")
+
+        report = {
+            "model_name": str(self.model_name),
+            "dataset_id": dataset_id,
+            "variant": variant,
+            "metrics": metrics_agg,
+            "summary_stats": summary_stats,
+            "runtime_seconds": float(elapsed),
+            "timing": timing,
+        }
+
+        if save_report:
+            with open(scores_path, "w", encoding="utf-8") as f:
+                json.dump(report, f)
+            print(f"Saved metrics report to {scores_path}")
+
+        # ---------------------------
+        # 7. (Optional) archival like run.py
+        # ---------------------------
+        if archive:
+            artefacts = []
+    
+            emb_path_for_arch = f"outputs/embeddings/{self.model_key}/{corpus_label}.npz"
+            if os.path.exists(emb_path_for_arch):
+                artefacts.append(emb_path_for_arch)
+    
+            result_file = f"outputs/results/{self.model_key}/{dataset_label}.json"
+            if os.path.exists(result_file):
+                artefacts.append(result_file)
+    
+            # If you want the same archival behavior:
+            for folder in ["embeddings", "results"]:
+                path = os.path.join(ARCHIVE_ROOT, f"outputs/{folder}/{self.model_key}")
+                os.makedirs(path, exist_ok=True)
+    
+            for artefact in artefacts:
+                dest = os.path.join(ARCHIVE_ROOT, artefact)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                print(f"[ARCHIVE] Copying → {artefact} → {dest}")
+                if os.path.isdir(artefact):
+                    shutil.copytree(artefact, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(artefact, dest)
+                
+                # Delete from NVME
+                if corpus_id not in ["irds:msmarco-passage/dev", "irds:msmarco-passage/dev/small"]:
+                    if os.path.isdir(artefact):
+                        print(f"[CLEANUP] Removing folder from NVMe → {artefact}")
+                        shutil.rmtree(artefact)
+                    elif os.path.isfile(artefact):
+                        print(f"[CLEANUP] Removing file from NVMe → {artefact}")
+                        os.remove(artefact)
+
+        # Clean up objects
+        del indexer, evaluator
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return {
+            "metrics_agg": metrics_agg,
+            "metrics_perq": metrics_perq,
+            "summary_stats": summary_stats,
+            "results": results,
+            "runtime_seconds": float(elapsed),
+            "variant": variant,
+            "timing": timing,
+        }
