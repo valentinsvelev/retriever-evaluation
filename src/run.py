@@ -114,6 +114,10 @@ def run(
 
         timing["num_queries"] = len(query_ids)
 
+        # Free up memory
+        del docs, queries, docs_iter, queries_iter
+        gc.collect()
+
         # ---------------------------
         # 2–3. Encode/Index/Search
         # ---------------------------
@@ -196,6 +200,10 @@ def run(
             corpus_dict  = dict(zip(doc_ids, doc_texts))
             queries_dict = {qid: f"query: {txt}" for qid, txt in zip(query_ids, query_texts)}
             colbert = ColBERT(dataset_name=dataset_label, corpus=corpus_dict, queries=queries_dict)
+
+            # Free up RAM
+            del doc_texts, doc_titles
+            gc.collect()
 
             # ColBERT indexing (includes doc encoding + index build)
             t0 = time.time()
@@ -366,6 +374,10 @@ def run(
                 # Save if Contriever or MS MARCO
                 if model_key == "contriever" or dataset_id == "irds:msmarco-passage/dev/small":
                     save_dense_embeddings(corpus_embeddings, emb_path)
+            
+            # Free up RAM
+            del doc_texts, doc_titles
+            gc.collect()
 
             # Queries are dataset-specific
             t0 = time.time()
@@ -395,6 +407,10 @@ def run(
         with gzip.open(results_path, 'wt', encoding="utf-8") as f:
             json.dump(results, f)
         print(f"Saved search results to {results_path}")
+
+        # Free up RAM
+        del results
+        gc.collect()
 
         evaluator = Evaluator(dataset_id, skip_self_matches="auto")
 
@@ -452,7 +468,7 @@ def run(
             del tart_encoder
         else:
             del encoder, indexer, corpus_embeddings, query_embeddings
-        del evaluator, queries, docs
+        del evaluator
         
         # Free up RAM
         gc.collect()

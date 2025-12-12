@@ -7,6 +7,7 @@ import time
 import json
 import gzip
 import os
+import gc
 from tqdm.auto import tqdm
 
 from src.indexing.faiss_indexer import FaissIndexer
@@ -188,6 +189,10 @@ class NVEmbedEncoder:
 
         timing["num_queries"] = len(query_ids)
 
+        # Free up memory
+        del docs, queries, docs_iter, queries_iter
+        gc.collect()
+
         # ---------------------------
         # 2. Encode / cache corpus
         # ---------------------------
@@ -212,6 +217,10 @@ class NVEmbedEncoder:
             # Save if MS MARCO
             if dataset_id == "irds:msmarco-passage/dev/small":
                 save_dense_embeddings(corpus_embeddings, emb_path)
+        
+        # Free up RAM
+        del doc_texts, doc_titles
+        gc.collect()
 
         # ---------------------------
         # 3. Encode queries
@@ -251,6 +260,10 @@ class NVEmbedEncoder:
         with gzip.open(results_path, "wt", encoding="utf-8") as f:
             json.dump(results, f)
         print(f"Saved search results to {results_path}")
+
+        # Free up RAM
+        del results
+        gc.collect()
 
         # ---------------------------
         # 6. Evaluate
@@ -335,6 +348,7 @@ class NVEmbedEncoder:
 
         # Clean up objects
         del indexer, evaluator
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 

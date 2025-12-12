@@ -1,3 +1,10 @@
 *
 !.gitignore
 !src
+!src/**
+!run_scripts
+!run_scripts/**
+!requirements
+!requirements/**
+
+**/__pycache__
