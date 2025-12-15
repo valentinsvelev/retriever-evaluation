@@ -103,8 +103,6 @@ class LLM2VecEncoder:
 
 
     def _mean_pool(self, last_hidden_state, attention_mask):
-        # last_hidden_state: [B, T, H]
-        # attention_mask:    [B, T]
         mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
         summed = (last_hidden_state * mask).sum(dim=1)
         counts = mask.sum(dim=1).clamp(min=1e-9)
@@ -286,10 +284,6 @@ class LLM2VecEncoder:
             json.dump(results, f)
         print(f"Saved search results to {results_path}")
 
-        # Free up RAM
-        del results
-        gc.collect()
-
         # ---------------------------
         # 6. Evaluate
         # ---------------------------
@@ -302,6 +296,12 @@ class LLM2VecEncoder:
         print(pd.DataFrame([metrics_agg]))
 
         total_elapsed = time.time() - start_time
+
+        # Free up RAM
+        if "jhu-clsp" not in dataset_id.lower():
+            del results
+            gc.collect()
+            results = None
 
         if timing["num_queries"] > 0:
             timing["avg_latency_ms"] = timing["search_seconds"] / timing["num_queries"] * 1000

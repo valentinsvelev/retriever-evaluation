@@ -97,7 +97,7 @@ handler.save()
 results_per_query = {}
 runs_cache = {}  # {(dataset, model): {"og": {...}, "changed": {...}}}
 
-for model in ["simcse", "simlm", "splade", "sparta", "deepct"]:
+for model in ["simlm", "splade", "sparta", "deepct"]:
     for dataset in DATASETS:
         base_label = dataset.replace("/", "_").replace(":", "_")
         run_key = (dataset, model)

@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from torch.nn import DataParallel
 from transformers import AutoModel, AutoTokenizer#, BitsAndBytesConfig
 import pandas as pd
 import numpy as np
@@ -47,6 +48,16 @@ class NVEmbedEncoder:
         self.max_length = 32768
         
         self._load_model()
+    
+    def _wrap_submodules_dataparallel(self):
+        if not torch.cuda.is_available():
+            return
+        n = torch.cuda.device_count()
+        if n < 2:
+            return
+
+        for k, m in list(self.model._modules.items()):
+            self.model._modules[k] = DataParallel(m)
 
     def _load_model(self):
         """Loads the tokenizer and the NV-Embed-v2 model."""
@@ -65,13 +76,17 @@ class NVEmbedEncoder:
             #quantization_config=self.bnb_cfg,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            device_map="auto",
+            #device_map="auto",
         )
         
         # --- Step 3: Move to device and set to eval mode ---
-        #self.model.to(self.device)
+        # IMPORTANT: move to GPU first
+        self.model.to(self.device)
         self.model.eval()
-        
+
+        # If multi-GPU, DP-wrap the submodules (per model card workaround)
+        self._wrap_submodules_dataparallel()
+
         print(f"NV-Embed model loaded successfully and moved to {self.device}.")
 
 
@@ -209,7 +224,7 @@ class NVEmbedEncoder:
             corpus_embeddings = self.encode(
                 texts=doc_texts,
                 is_query=False,
-                batch_size=8,
+                batch_size=32,
                 show_progress_bar=True,
             )
             timing["doc_encoding_seconds"] += time.time() - t0
@@ -217,7 +232,7 @@ class NVEmbedEncoder:
             # Save if MS MARCO
             if dataset_id == "irds:msmarco-passage/dev/small":
                 save_dense_embeddings(corpus_embeddings, emb_path)
-        
+
         # Free up RAM
         del doc_texts, doc_titles
         gc.collect()
@@ -229,7 +244,7 @@ class NVEmbedEncoder:
         query_embeddings = self.encode(
             texts=query_texts,
             is_query=True,
-            batch_size=8,
+            batch_size=32,
             show_progress_bar=True,
         )
         timing["query_encoding_seconds"] += time.time() - t0
@@ -261,10 +276,6 @@ class NVEmbedEncoder:
             json.dump(results, f)
         print(f"Saved search results to {results_path}")
 
-        # Free up RAM
-        del results
-        gc.collect()
-
         # ---------------------------
         # 6. Evaluate
         # ---------------------------
@@ -278,6 +289,12 @@ class NVEmbedEncoder:
 
         end_time = time.time()
         elapsed = end_time - start_time
+        
+        # Free up RAM
+        if "jhu-clsp" not in dataset_id.lower():
+            del results
+            gc.collect()
+            results = None
 
         # latency
         if timing["num_queries"] > 0 and timing["search_seconds"] > 0:

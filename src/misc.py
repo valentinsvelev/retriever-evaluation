@@ -86,10 +86,16 @@ def get_dataset_variants(handler: DataHandler, dataset_id: str):
 
     return [None] # normal dataset (all but FollowIR)
 
-def save_dense_embeddings(embeddings: torch.Tensor, path: str) -> None:
-    arr = embeddings.detach().cpu().numpy().astype("float16")
-    np.savez_compressed(path, embeddings=arr)
 
-def load_dense_embeddings(path: str) -> torch.Tensor:
-    arr = np.load(path)["embeddings"].astype("float32") # back to float32 for FAISS
-    return torch.from_numpy(arr) # CPU tensor
+def save_dense_embeddings(embeddings: torch.Tensor, doc_ids: list[str], path: str) -> None:
+    arr = embeddings.detach().cpu().numpy().astype("float16")
+    np.savez_compressed(path, embeddings=arr, doc_ids=np.array(doc_ids, dtype=object))
+
+
+def load_dense_embeddings(path: str):
+    data = np.load(path, allow_pickle=True)
+    emb = torch.from_numpy(data["embeddings"].astype("float32"))
+    if "doc_ids" in data.files:
+        return emb, data["doc_ids"].tolist()
+    # old cache format
+    return emb, None

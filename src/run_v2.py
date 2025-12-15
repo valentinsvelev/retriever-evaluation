@@ -553,11 +553,9 @@ def run(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    #############################
     # ---------------------------
     # 4. Save & Evaluate
     # ---------------------------
-    #############################
     out_dir = f"outputs/results/{model_key}"
     os.makedirs(out_dir, exist_ok=True)
     results_path = os.path.join(out_dir, f"{dataset_label}.json")
@@ -608,11 +606,9 @@ def run(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    #############################
     # ---------------------------
     # 6. Archival (unchanged logic, but keep it after big deletes)
     # ---------------------------
-    #############################
     if archive:
         ARCHIVE_ROOT = "/dataHDD1/masterthesis"
         artefacts = []
