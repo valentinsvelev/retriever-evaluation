@@ -127,7 +127,7 @@ encoder = NVEmbedEncoder(model_key=model, config=MODELS[model], device=DEVICE)
 results_per_query = {model: {}}
 runs_cache = {} # {(dataset, "nvembed"): {"og": {...}, "changed": {...}}}
 
-for dataset in ["irds:msmarco-passage/dev/small", "irds:lotte/pooled/test/forum"]:
+for dataset in SMALL_DATASETS:
     base_label = dataset.replace("/", "_").replace(":", "_")
     run_key = (dataset, model)
 

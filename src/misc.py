@@ -1,4 +1,5 @@
 import os
+import json
 import pandas as pd
 import numpy as np
 from collections import Counter
@@ -87,9 +88,20 @@ def get_dataset_variants(handler: DataHandler, dataset_id: str):
     return [None] # normal dataset (all but FollowIR)
 
 
-def save_dense_embeddings(embeddings: torch.Tensor, doc_ids: list[str], path: str) -> None:
-    arr = embeddings.detach().cpu().numpy().astype("float16")
-    np.savez_compressed(path, embeddings=arr, doc_ids=np.array(doc_ids, dtype=object))
+def save_dense_embeddings(embeddings, doc_ids: list[str], path: str) -> None:
+    if isinstance(embeddings, torch.Tensor):
+        arr = embeddings.detach().cpu().numpy()
+    elif isinstance(embeddings, np.ndarray):
+        arr = embeddings
+    else:
+        raise TypeError(f"Unsupported type: {type(embeddings)}")
+
+    arr = arr.astype("float16")
+    np.savez_compressed(
+        path,
+        embeddings=arr,
+        doc_ids=np.array(doc_ids, dtype=object)
+    )
 
 
 def load_dense_embeddings(path: str):
@@ -99,3 +111,22 @@ def load_dense_embeddings(path: str):
         return emb, data["doc_ids"].tolist()
     # old cache format
     return emb, None
+
+
+def append_dense_embeddings_jsonl(embeddings, doc_ids, path):
+    if isinstance(embeddings, torch.Tensor):
+        arr = embeddings.detach().cpu().numpy()
+    elif isinstance(embeddings, np.ndarray):
+        arr = embeddings
+    else:
+        raise TypeError(type(embeddings))
+
+    arr = arr.astype("float16")
+
+    with open(path, "a", encoding="utf-8") as f:
+        for emb, doc_id in zip(arr, doc_ids):
+            rec = {
+                "doc_id": doc_id,
+                "embedding": emb.tolist()
+            }
+            f.write(json.dumps(rec) + "\n")

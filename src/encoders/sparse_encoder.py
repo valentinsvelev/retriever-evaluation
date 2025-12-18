@@ -32,6 +32,23 @@ from src.models.sparta import SPARTA
 # -----------------------------------------------------------------------------
 # Utility Functions: Hashing & File Operations
 # -----------------------------------------------------------------------------
+import traceback
+def _worker_wrapper(rank, shard_path, part_path, worker_fn, worker_kwargs):
+    try:
+        worker_fn(rank, shard_path, part_path, worker_kwargs)
+    except Exception:
+        msg = f"[WORKER CRASH] rank={rank} shard={shard_path} part={part_path}"
+        print(msg, flush=True)
+        traceback.print_exc()
+        # also persist to file
+        log_dir = os.path.join(os.path.dirname(part_path), ".worker_logs")
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, f"rank{rank}.log"), "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+            f.write(traceback.format_exc() + "\n")
+        sys.stderr.flush()
+        sys.stdout.flush()
+        raise
 
 def _stable_hash(s: str) -> str:
     """Returns a short, deterministic hash of a string."""
@@ -128,8 +145,8 @@ def _run_on_all_gpus_sharded(
     procs = []
     for rank, shard_path in enumerate(shard_paths):
         p = ctx.Process(
-            target=worker_fn,
-            args=(rank, shard_path, part_paths[rank], worker_kwargs),
+            target=_worker_wrapper,
+            args=(rank, shard_path, part_paths[rank], worker_fn, worker_kwargs),
         )
         p.start()
         procs.append(p)
@@ -152,8 +169,14 @@ def _run_on_all_gpus_sharded(
 # -----------------------------------------------------------------------------
 
 def _deepct_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
+    # torch.cuda.set_device(rank)
+    # device = torch.device(f"cuda:{rank}")
+    
+    n = torch.cuda.device_count()
+    gpu_id = rank % max(1, n)   # safe even if n==0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
 
     model_name = kw["model_name"]
     max_seq_len = kw.get("max_seq_len", 512)
@@ -251,8 +274,14 @@ def _deepct_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) 
 
 
 def _doc2query_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
+    # torch.cuda.set_device(rank)
+    # device = torch.device(f"cuda:{rank}")
+    
+    n = torch.cuda.device_count()
+    gpu_id = rank % max(1, n)   # safe even if n==0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
 
     model_ckpt = kw["model_ckpt"]
     queries_per_doc = kw.get("queries_per_doc", 3)
@@ -315,9 +344,12 @@ def _doc2query_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any
 
 
 def _splade_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
-    
+    n = torch.cuda.device_count()
+    gpu_id = rank % max(1, n)   # safe even if n==0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
+
     st_model = STSparseEncoder(kw["model_name"], device=str(device))
     batch_size = kw.get("batch_size", 32)
     buffer = []
@@ -337,9 +369,12 @@ def _splade_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) 
                 pairs_batch = st_model.decode(emb)
 
                 for item, pairs in zip(buffer, pairs_batch):
-                    if not pairs: continue
+                    #if not pairs: continue
+                    if not pairs:
+                        print("EMPTY pairs for doc", item["id"])
+                        continue
                     vec = SparseEncoder._quantize_pairs(pairs)
-                    fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
+                    fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
                 buffer = []
 
         if buffer:
@@ -347,14 +382,23 @@ def _splade_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) 
             emb = st_model.encode_document(texts)
             pairs_batch = st_model.decode(emb)
             for item, pairs in zip(buffer, pairs_batch):
-                if not pairs: continue
+                #if not pairs: continue
+                if not pairs:
+                    print("EMPTY pairs for doc", item["id"])
+                    continue
                 vec = SparseEncoder._quantize_pairs(pairs)
-                fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
+                fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
 
 
 def _unicoil_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
+    # torch.cuda.set_device(rank)
+    # device = torch.device(f"cuda:{rank}")
+    
+    n = torch.cuda.device_count()
+    gpu_id = rank % max(1, n)   # safe even if n==0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
     
     doc_encoder = UniCoilDocumentEncoder("castorini/unicoil-msmarco-passage", device=str(device))
     
@@ -399,7 +443,8 @@ def _unicoil_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any])
                     if isinstance(enc, list): enc = {t: float(w) for t, w in enc}
                     vec = prune(enc)
                     if vec:
-                        fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}) + "\n")
+                        #fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}) + "\n")
+                        fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
                 buffer = []
 
         if buffer:
@@ -409,12 +454,19 @@ def _unicoil_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any])
                 if isinstance(enc, list): enc = {t: float(w) for t, w in enc}
                 vec = prune(enc)
                 if vec:
-                    fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}) + "\n")
+                    #fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}) + "\n")
+                    fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
 
 
 def _sparta_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
+    # torch.cuda.set_device(rank)
+    # device = torch.device(f"cuda:{rank}")
+    
+    n = torch.cuda.device_count()
+    gpu_id = rank % max(1, n)   # safe even if n==0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(gpu_id)
+    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
     
     model_name = kw["model_name"]
     sparta = SPARTA(model_name, device=str(device))
@@ -432,18 +484,21 @@ def _sparta_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) 
             buffer.append({"_id": str(obj["id"]), "text": text})
 
             if len(buffer) >= CHUNK_SIZE:
+                id2text = {b["_id"]: b["text"] for b in buffer}
+                
                 # encode_corpus handles internal batching
                 vecs = sparta.encode_corpus(buffer, batch_size=kw.get("batch_size", 16))
                 for did, vec in vecs.items():
                     if vec:
-                        fout.write(json.dumps({"id": did, "vector": vec, "contents": ""}) + "\n")
+                        fout.write(json.dumps({"id": did, "vector": vec, "contents": id2text[did]}) + "\n")
                 buffer = []
         
         if buffer:
+            id2text = {b["_id"]: b["text"] for b in buffer}
             vecs = sparta.encode_corpus(buffer, batch_size=kw.get("batch_size", 16))
             for did, vec in vecs.items():
                 if vec:
-                    fout.write(json.dumps({"id": did, "vector": vec, "contents": ""}) + "\n")
+                    fout.write(json.dumps({"id": did, "vector": vec, "contents": id2text[did]}) + "\n")
 
 
 # -----------------------------------------------------------------------------
@@ -577,6 +632,8 @@ class SparseEncoder:
                 worker_kwargs={"model_name": self.model_name},
                 shard_cache_root=os.path.join(encoding_dir, ".shards")
             )
+            if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
+                raise RuntimeError(f"[SPLADE] Encoding failed: missing/empty {out_path}")
             return encoding_dir
 
         # Fallback CLI

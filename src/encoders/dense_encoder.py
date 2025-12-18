@@ -464,7 +464,7 @@ class DenseEncoder:
         elif self._handler_type == "transformer":
             batch_size = 256
         elif self._handler_type == "sentence_transformer":
-            if "gemma" in self.model_name:
+            if "gemma" in self.model_name or "kalm" in self.model_name:
                 batch_size = 32
             else:
                 batch_size = 64

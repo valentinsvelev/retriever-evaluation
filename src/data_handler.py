@@ -259,7 +259,8 @@ class DataHandler:
     def read(
         self,
         dataset: str,
-        variant: Optional[str] = None  # for jhu-clsp: "og" or "changed"
+        variant: Optional[str] = None,  # for jhu-clsp: "og" or "changed"
+        yield_batches: bool = False
     ) -> Tuple[Iterable[Dict[str, Any]], Iterable[Dict[str, Any]], Iterable[Dict[str, Any]]]:
         typ, name = dataset.split(":", 1)
         base = f"{typ}_{name.replace('/', '_')}"
@@ -267,8 +268,12 @@ class DataHandler:
         subdir = os.path.join(self.folder, folder_name)
 
         def scan(path):
-            for batch in ds.dataset(path, format="parquet").to_batches():
-                yield from batch.to_pandas().to_dict(orient="records")
+            if yield_batches:
+                for batch in ds.dataset(path, format="parquet").to_batches():
+                    yield batch.to_pandas().to_dict(orient="records")
+            else:
+                for batch in ds.dataset(path, format="parquet").to_batches():
+                    yield from batch.to_pandas().to_dict(orient="records")
 
         return (
             scan(os.path.join(subdir, "docs.parquet")),

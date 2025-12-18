@@ -17,7 +17,8 @@ from src.configs.models import MODELS
 from src.evaluator import Evaluator
 
 import shutil
-from src.misc import save_dense_embeddings, load_dense_embeddings
+from src.misc import save_dense_embeddings, load_dense_embeddings, append_dense_embeddings_jsonl
+
 
 DATASET_MAPPING = {
     "irds:msmarco-passage/dev/small": "irds:msmarco-passage/dev/small",
@@ -124,8 +125,8 @@ class LLM2VecEncoder:
     
         all_embs = []
         desc = "Encoding Queries" if is_query else "Encoding Documents"
-        
-        self.model.eval()
+
+        #self.model.eval()
         device = self.primary_device
     
         self.model.eval()
@@ -142,8 +143,7 @@ class LLM2VecEncoder:
                     max_length=512,
                     return_tensors="pt",
                 )
-    
-                # For sharded models (device_map="auto"), putting inputs on first param device is fine
+
                 if torch.cuda.is_available():
                     first_device = next(self.model.parameters()).device
                     encoded = {k: v.to(first_device) for k, v in encoded.items()}
@@ -152,15 +152,14 @@ class LLM2VecEncoder:
                 # outputs.last_hidden_state: [B, T, H]
                 batch_embs = self._mean_pool(outputs.last_hidden_state, encoded["attention_mask"])
                 all_embs.append(batch_embs.cpu())
-    
+
         embeddings = torch.cat(all_embs, dim=0)
         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-    
+
         return embeddings
 
     
     def run(self, model: str, handler: DataHandler, ds: str, device: str, top_k: int = 1001, variant: str | None = None, save_report: bool = False, archive: bool = True):
-
         # ---------------------------
         # 0. Dataset / corpus mapping
         # ---------------------------
@@ -198,57 +197,56 @@ class LLM2VecEncoder:
         # ---------------------------
         # 1. Load dataset
         # ---------------------------
-        _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)
-        queries = pd.DataFrame(list(queries_iter))
-        qrels   = pd.DataFrame(list(qrels_iter))
-
-        docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant)
-        docs = pd.DataFrame(list(docs_iter))
-
-        doc_ids    = docs["doc_id"].astype(str).tolist()
-        doc_texts  = docs["text"].tolist()
-        doc_titles = docs["title"].tolist() if "title" in docs.columns else None
-
-        query_ids   = queries["query_id"].astype(str).tolist()
-        query_texts = queries["text"].tolist()
-
-        timing["num_queries"] = len(query_ids)
-
-        # Free up memory
-        del docs, queries, docs_iter, queries_iter
-        gc.collect()
-
-        # ---------------------------
-        # 2. Encode / cache corpus
-        # ---------------------------
-        out_dir = f"outputs/embeddings/{self.model_key}"
-        os.makedirs(out_dir, exist_ok=True)
-        emb_path = os.path.join(out_dir, f"{corpus_label}.npz")
-
-        if os.path.exists(emb_path):
-            print(f"Loading cached corpus embeddings from {emb_path}")
-            corpus_embeddings = load_dense_embeddings(emb_path)
-        else:
-            print(f"Encoding corpus with LLM2Vec → {emb_path}")
-            t0 = time.time()
-            corpus_embeddings = self.encode(
+        
+        indexer = None # instantiate indexer outside of for loop
+        all_doc_ids = []
+        
+        docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
+        
+        for d in docs_iter:        
+            doc_texts = [doc.get("text", "") or "" for doc in d]
+            batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]  # <-- rename
+            all_doc_ids.extend(batch_doc_ids)
+            
+            # Compute document embeddings
+            t = time.time()
+            batch_embeddings = self.encode(
                 texts=doc_texts,
                 is_query=False,
                 batch_size=16,
             )
-            timing["doc_encoding_seconds"] += time.time() - t0
+            timing["doc_encoding_seconds"] += time.time() - t
             
-            # Save if MS MARCO
+            # Save embeddings iteratively as json for MS MARCO
+            out_dir = f"outputs/embeddings/{self.model_key}"
+            os.makedirs(out_dir, exist_ok=True)
+            emb_path = os.path.join(out_dir, f"{corpus_label}.jsonl")
+            
             if dataset_id == "irds:msmarco-passage/dev/small":
-                save_dense_embeddings(corpus_embeddings, emb_path)
-        
-        # Free up RAM
-        del doc_texts, doc_titles
-        gc.collect()
+                append_dense_embeddings_jsonl(batch_embeddings, batch_doc_ids, emb_path)
+            
+            # Instantiate indexer
+            if indexer is None:
+                indexer = FaissIndexer(dimension=batch_embeddings.shape[1])
 
-        # ---------------------------
-        # 3. Encode queries
-        # ---------------------------
+            # Build index iteratively
+            t = time.time()
+            indexer.build(batch_embeddings)
+            timing["index_build_seconds"] += time.time() - t
+        
+        # Load queries
+        _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)
+
+        query_ids = []
+        query_texts = []
+        
+        for q in queries_iter:
+            query_ids.append(str(q.get("query_id", "") or ""))
+            query_texts.append(q.get("text", "") or "")
+
+        timing["num_queries"] = len(query_ids)
+
+        # Compute query embeddings
         t0 = time.time()
         query_embeddings = self.encode(
             texts=query_texts,
@@ -256,37 +254,125 @@ class LLM2VecEncoder:
             batch_size=16,
         )
         timing["query_encoding_seconds"] += time.time() - t0
-
-        # ---------------------------
-        # 4. FAISS index + search
-        # ---------------------------
-        indexer = FaissIndexer(dimension=corpus_embeddings.shape[1])
-        t0 = time.time()
-        indexer.build(corpus_embeddings)
-        timing["index_build_seconds"] += time.time() - t0
-
+        
+        # Search index
         t0 = time.time()
         scores, indices = indexer.search(query_embeddings, top_k=top_k)
         timing["search_seconds"] += time.time() - t0
+        
+        # print("index.ntotal:", indexer.index.ntotal)
+        # print("len(all_doc_ids):", len(all_doc_ids))
+        # print("max returned idx:", indices.max())
 
+        del query_embeddings, indexer
+        gc.collect()
+
+        # Create results dict for evaluation
         results = {
-            qid: {doc_ids[idx]: float(score) for idx, score in zip(indices[i], scores[i])}
+            qid: {all_doc_ids[idx]: float(score) for idx, score in zip(indices[i], scores[i])}
             for i, qid in enumerate(query_ids)
         }
-
-        # ---------------------------
-        # 5. Save results
-        # ---------------------------
+        
+        # Save results as json
         results_dir = f"outputs/results/{self.model_key}"
         os.makedirs(results_dir, exist_ok=True)
         results_path = os.path.join(results_dir, f"{dataset_label}.json")
         with gzip.open(results_path, "wt", encoding="utf-8") as f:
             json.dump(results, f)
         print(f"Saved search results to {results_path}")
+        
+        
+        
+        # _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)
+        # queries = pd.DataFrame(list(queries_iter))
+        # qrels   = pd.DataFrame(list(qrels_iter))
+
+        # docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant)
+        # docs = pd.DataFrame(list(docs_iter))
+
+        # doc_ids    = docs["doc_id"].astype(str).tolist()
+        # doc_texts  = docs["text"].tolist()
+        # doc_titles = docs["title"].tolist() if "title" in docs.columns else None
+
+        # query_ids   = queries["query_id"].astype(str).tolist()
+        # query_texts = queries["text"].tolist()
+
+        # timing["num_queries"] = len(query_ids)
+
+        # # Free up memory
+        # del docs, queries, docs_iter, queries_iter
+        # gc.collect()
+
+        # # ---------------------------
+        # # 2. Encode / cache corpus
+        # # ---------------------------
+        # out_dir = f"outputs/embeddings/{self.model_key}"
+        # os.makedirs(out_dir, exist_ok=True)
+        # emb_path = os.path.join(out_dir, f"{corpus_label}.npz")
+
+        # if os.path.exists(emb_path):
+        #     print(f"Loading cached corpus embeddings from {emb_path}")
+        #     corpus_embeddings = load_dense_embeddings(emb_path)
+        # else:
+        #     print(f"Encoding corpus with LLM2Vec → {emb_path}")
+        #     t0 = time.time()
+        #     corpus_embeddings = self.encode(
+        #         texts=doc_texts,
+        #         is_query=False,
+        #         batch_size=16,
+        #     )
+        #     timing["doc_encoding_seconds"] += time.time() - t0
+            
+        #     # Save if MS MARCO
+        #     if dataset_id == "irds:msmarco-passage/dev/small":
+        #         save_dense_embeddings(corpus_embeddings, emb_path)
+        
+        # # Free up RAM
+        # del doc_texts, doc_titles
+        # gc.collect()
+
+        # # ---------------------------
+        # # 3. Encode queries
+        # # ---------------------------
+        # t0 = time.time()
+        # query_embeddings = self.encode(
+        #     texts=query_texts,
+        #     is_query=True,
+        #     batch_size=16,
+        # )
+        # timing["query_encoding_seconds"] += time.time() - t0
+
+        # # ---------------------------
+        # # 4. FAISS index + search
+        # # ---------------------------
+        # indexer = FaissIndexer(dimension=corpus_embeddings.shape[1])
+        # t0 = time.time()
+        # indexer.build(corpus_embeddings)
+        # timing["index_build_seconds"] += time.time() - t0
+
+        # t0 = time.time()
+        # scores, indices = indexer.search(query_embeddings, top_k=top_k)
+        # timing["search_seconds"] += time.time() - t0
+
+        # results = {
+        #     qid: {doc_ids[idx]: float(score) for idx, score in zip(indices[i], scores[i])}
+        #     for i, qid in enumerate(query_ids)
+        # }
+
+        # # ---------------------------
+        # # 5. Save results
+        # # ---------------------------
+        # results_dir = f"outputs/results/{self.model_key}"
+        # os.makedirs(results_dir, exist_ok=True)
+        # results_path = os.path.join(results_dir, f"{dataset_label}.json")
+        # with gzip.open(results_path, "wt", encoding="utf-8") as f:
+        #     json.dump(results, f)
+        # print(f"Saved search results to {results_path}")
 
         # ---------------------------
         # 6. Evaluate
         # ---------------------------
+        qrels   = pd.DataFrame(list(qrels_iter))
         evaluator = Evaluator(dataset_id, skip_self_matches="auto")
         eval_start = time.time()
         metrics_agg, metrics_perq, summary_stats = evaluator.evaluate(qrels, results)
@@ -354,7 +440,7 @@ class LLM2VecEncoder:
                     print(f"[CLEANUP] Removing from NVMe → {artefact}")
                     os.remove(artefact)
 
-        del indexer, evaluator
+        del evaluator
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

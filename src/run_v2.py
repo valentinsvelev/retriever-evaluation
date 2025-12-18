@@ -574,9 +574,11 @@ def run(
 
     elapsed = time.time() - start_time
 
-    # reduce memory before archival/report
-    del results
-    gc.collect()
+    # Free up RAM
+    if "jhu-clsp" not in dataset_id.lower():
+        del results
+        gc.collect()
+        results = None
 
     avg_latency_ms = (timing["search_seconds"] / timing["num_queries"]) * 1000.0 if timing["num_queries"] > 0 else None
     timing["avg_latency_ms"] = avg_latency_ms
