@@ -3,14 +3,13 @@ import sys
 import json
 import re
 import math
-import subprocess
-import hashlib
-import multiprocessing as mp
-from typing import List, Dict, Any, Optional, Tuple
+import traceback
+from typing import Dict, Any, Iterable, Tuple, List, Optional
 
+import torch
+import torch.multiprocessing as mp
 import pandas as pd
 from tqdm import tqdm
-import torch
 
 from pyserini.encode import (
     SpladeQueryEncoder,
@@ -19,631 +18,581 @@ from pyserini.encode import (
 )
 from sentence_transformers import SparseEncoder as STSparseEncoder
 from transformers import (
-    T5Tokenizer,
-    T5ForConditionalGeneration,
-    AutoTokenizer,
-    AutoModelForTokenClassification,
+    T5Tokenizer, T5ForConditionalGeneration,
+    AutoTokenizer, AutoModelForTokenClassification
 )
 
-from src.configs.models import MODELS
 from src.models.sparta import SPARTA
 
 
-# -----------------------------------------------------------------------------
-# Utility Functions: Hashing & File Operations
-# -----------------------------------------------------------------------------
-import traceback
-def _worker_wrapper(rank, shard_path, part_path, worker_fn, worker_kwargs):
+# -------------------------
+# Multiprocess helpers
+# -------------------------
+
+def _count_lines(path: str) -> int:
+    with open(path, "r", encoding="utf-8") as f:
+        return sum(1 for _ in f)
+
+def _iter_corpus_strided(
+    in_path: str,
+    rank: int,
+    world: int,
+    *,
+    expected: int | None = None,
+    desc: str = "",
+    position: int = 0,
+) -> Iterable[Tuple[str, str]]:
+    """Yield (doc_id, text) for lines where line_index % world == rank."""
+    pbar = tqdm(total=expected, desc=desc, position=position, leave=False) if expected else None
     try:
-        worker_fn(rank, shard_path, part_path, worker_kwargs)
-    except Exception:
-        msg = f"[WORKER CRASH] rank={rank} shard={shard_path} part={part_path}"
-        print(msg, flush=True)
-        traceback.print_exc()
-        # also persist to file
-        log_dir = os.path.join(os.path.dirname(part_path), ".worker_logs")
-        os.makedirs(log_dir, exist_ok=True)
-        with open(os.path.join(log_dir, f"rank{rank}.log"), "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-            f.write(traceback.format_exc() + "\n")
-        sys.stderr.flush()
-        sys.stdout.flush()
-        raise
+        with open(in_path, "r", encoding="utf-8") as fin:
+            for i, line in enumerate(fin):
+                if i % world != rank:
+                    continue
+                obj = json.loads(line)
+                docid = str(obj.get("id") or obj.get("doc_id") or obj.get("_id") or "")
+                text = (obj.get("text") or obj.get("contents") or "").strip()
+                if not (docid and text):
+                    continue
+                if pbar:
+                    pbar.update(1)
+                yield docid, text
+    finally:
+        if pbar:
+            pbar.close()
 
-def _stable_hash(s: str) -> str:
-    """Returns a short, deterministic hash of a string."""
-    return hashlib.md5(s.encode("utf-8")).hexdigest()[:12]
 
-def _ensure_dir(p: str) -> None:
-    os.makedirs(p, exist_ok=True)
+def _merge_parts(out_path: str, world: int) -> None:
+    """Merge out_path.part{r} into out_path, then delete parts."""
+    with open(out_path, "w", encoding="utf-8") as out_f:
+        for r in range(world):
+            part = out_path + f".part{r}"
+            with open(part, "r", encoding="utf-8") as in_f:
+                for line in in_f:
+                    out_f.write(line)
+    for r in range(world):
+        try:
+            os.remove(out_path + f".part{r}")
+        except OSError:
+            pass
 
-def _split_jsonl_contiguous(in_path: str, shard_dir: str, num_shards: int) -> List[str]:
-    """
-    Splits a JSONL file into `num_shards` contiguous chunks physically on disk.
-    This prevents seek contention during multiprocessing.
-    """
-    _ensure_dir(shard_dir)
 
-    # 1. Count total lines quickly
-    with open(in_path, "r", encoding="utf-8") as f:
-        n_lines = sum(1 for _ in f)
-
-    num_shards = max(1, min(num_shards, n_lines if n_lines > 0 else 1))
-    shard_paths = [os.path.join(shard_dir, f"shard_{i}.jsonl") for i in range(num_shards)]
-
-    # 2. Return existing if valid
-    if all(os.path.exists(p) and os.path.getsize(p) > 0 for p in shard_paths):
-        return shard_paths
-
-    # 3. Calculate split sizes
-    base = n_lines // num_shards
-    rem = n_lines % num_shards
-    shard_sizes = [base + (1 if i < rem else 0) for i in range(num_shards)]
-
-    # 4. Write shards
-    for p in shard_paths:
-        if os.path.exists(p): os.remove(p)
-
-    with open(in_path, "r", encoding="utf-8") as fin:
-        for shard_idx, shard_n in enumerate(shard_sizes):
-            with open(shard_paths[shard_idx], "w", encoding="utf-8") as fout:
-                for _ in range(shard_n):
-                    line = fin.readline()
-                    if not line: break
-                    fout.write(line)
-
-    return shard_paths
-
-def _concat_files_in_order(part_paths: List[str], out_path: str) -> None:
-    """Concatenates shard outputs back into a single file in deterministic order."""
-    _ensure_dir(os.path.dirname(out_path))
-    with open(out_path, "w", encoding="utf-8") as fout:
-        for p in part_paths:
-            if not os.path.exists(p): continue
-            with open(p, "r", encoding="utf-8") as fin:
-                for line in fin:
-                    fout.write(line)
-
-def _run_on_all_gpus_sharded(
+def _spawn_multi_gpu(
+    *,
+    mode: str,
     in_path: str,
     out_path: str,
-    num_gpus: int,
-    worker_fn,
-    worker_kwargs: Optional[Dict[str, Any]] = None,
-    shard_cache_root: Optional[str] = None,
+    world: int,
+    worker_kwargs: Dict[str, Any],
 ) -> None:
     """
-    Orchestrator:
-    1. Splits input file into N shards.
-    2. Spawns N processes (one per GPU).
-    3. Runs `worker_fn` on each shard.
-    4. Merges outputs.
+    Spawn one process per GPU, each writing a part file, then merge.
+    Uses mp.spawn for better error propagation.
     """
-    worker_kwargs = worker_kwargs or {}
-    _ensure_dir(os.path.dirname(out_path))
+    out_dir = os.path.dirname(out_path)
+    os.makedirs(out_dir, exist_ok=True)
 
-    # Skip if output already exists
-    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-        return
+    # Clean stale parts
+    for r in range(world):
+        p = out_path + f".part{r}"
+        if os.path.exists(p):
+            os.remove(p)
 
-    # Prepare shards
-    if shard_cache_root is None:
-        shard_cache_root = os.path.join(os.path.dirname(out_path), ".shards")
-    _ensure_dir(shard_cache_root)
-    
-    # Hash input path to create unique shard directory
-    shard_dir = os.path.join(shard_cache_root, f"{_stable_hash(in_path)}_ng{num_gpus}")
-    shard_paths = _split_jsonl_contiguous(in_path, shard_dir, num_gpus)
+    job = {
+        "mode": mode,
+        "in_path": in_path,
+        "out_path": out_path,
+        "world": world,
+        "worker_kwargs": worker_kwargs,
+    }
 
-    # Prepare temp output paths
-    part_paths = [f"{out_path}.part{i}" for i in range(len(shard_paths))]
-    for p in part_paths:
-        if os.path.exists(p): os.remove(p)
+    mp.spawn(_encode_worker_entry, args=(job,), nprocs=world, join=True)
 
-    # Spawn Workers
-    ctx = mp.get_context("spawn")
-    procs = []
-    for rank, shard_path in enumerate(shard_paths):
-        p = ctx.Process(
-            target=_worker_wrapper,
-            args=(rank, shard_path, part_paths[rank], worker_fn, worker_kwargs),
-        )
-        p.start()
-        procs.append(p)
+    # Validate parts exist and are non-empty
+    for r in range(world):
+        p = out_path + f".part{r}"
+        if not (os.path.exists(p) and os.path.getsize(p) > 0):
+            raise RuntimeError(f"Missing/empty part file: {p}")
 
-    # Wait for completion
-    for p in procs:
-        p.join()
-        if p.exitcode != 0:
-            raise RuntimeError(f"Worker (pid={p.pid}) exited with code {p.exitcode}")
+    _merge_parts(out_path, world)
 
-    # Merge and Cleanup
-    _concat_files_in_order(part_paths, out_path)
-    for p in part_paths:
-        try: os.remove(p)
-        except OSError: pass
+    if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
+        raise RuntimeError(f"Encoding failed: missing/empty {out_path}")
 
 
-# -----------------------------------------------------------------------------
-# Optimized Workers (Batched & Streaming)
-# -----------------------------------------------------------------------------
+def _encode_worker_entry(rank: int, job: Dict[str, Any]) -> None:
+    """
+    Worker entry point. Must be top-level for spawn.
+    Writes to out_path.part{rank}.
+    """
+    try:
+        mode = job["mode"]
+        in_path = job["in_path"]
+        out_path = job["out_path"]
+        world = job["world"]
+        kw = job["worker_kwargs"]
 
-def _deepct_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    # torch.cuda.set_device(rank)
-    # device = torch.device(f"cuda:{rank}")
-    
-    n = torch.cuda.device_count()
-    gpu_id = rank % max(1, n)   # safe even if n==0
-    if torch.cuda.is_available():
-        torch.cuda.set_device(gpu_id)
-    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
+        # Bind rank -> GPU
+        if torch.cuda.is_available():
+            n = torch.cuda.device_count()
+            gpu_id = rank % max(1, n)
+            torch.cuda.set_device(gpu_id)
+            device = f"cuda:{gpu_id}"
+        else:
+            device = "cpu"
 
+        part_path = out_path + f".part{rank}"
+
+        if mode == "splade":
+            _worker_splade(rank, world, device, in_path, part_path, kw)
+            return
+        if mode == "unicoil":
+            _worker_unicoil(rank, world, device, in_path, part_path, kw)
+            return
+        if mode == "sparta":
+            _worker_sparta(rank, world, device, in_path, part_path, kw)
+            return
+        if mode == "deepct":
+            _worker_deepct(rank, world, device, in_path, part_path, kw)
+            return
+        if mode == "doc2query":
+            _worker_doc2query(rank, world, device, in_path, part_path, kw)
+            return
+
+        raise ValueError(f"Unknown mode: {mode}")
+
+    except Exception:
+        # Persist traceback (SLURM stdout can hide it)
+        out_dir = os.path.dirname(job["out_path"])
+        log_dir = os.path.join(out_dir, ".worker_logs")
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, f"rank{rank}.log"), "a", encoding="utf-8") as f:
+            f.write(f"[WORKER CRASH] rank={rank} mode={job.get('mode')}\n")
+            f.write(traceback.format_exc() + "\n")
+        raise
+
+
+# -------------------------
+# Model-specific workers
+# -------------------------
+
+def _quantize_pairs(pairs, scale: int = 100, min_after_scale: int = 1, topn: int = 256) -> Dict[str, int]:
+    items = []
+    for tok, w in pairs:
+        try:
+            w = float(w)
+        except Exception:
+            continue
+        if w <= 0:
+            continue
+        iw = int(round(w * scale))
+        if iw >= min_after_scale:
+            items.append((str(tok), iw))
+
+    if topn and len(items) > topn:
+        items.sort(key=lambda x: x[1], reverse=True)
+        items = items[:topn]
+
+    return {t: iw for t, iw in items}
+
+
+def _worker_splade(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
     model_name = kw["model_name"]
-    max_seq_len = kw.get("max_seq_len", 512)
-    scale = kw.get("scale", 100.0)
-    
-    # Batch size for inference (adjust based on GPU VRAM, 64 is usually safe for BERT-base)
-    BATCH_SIZE = 64
+    batch_size = int(kw.get("batch_size", 32))
+    scale = int(kw.get("scale", 100))
+    topn = int(kw.get("topn", 256))
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForTokenClassification.from_pretrained(model_name).to(device).eval()
-    special_tokens = set(tokenizer.all_special_tokens)
-    MAX_TF = 20
+    st_model = STSparseEncoder(model_name, device=device)
 
-    def process_buffer(buffer_list):
-        if not buffer_list: return []
-        
-        texts = [b["text"] for b in buffer_list]
-        
-        # 1. Batch Tokenize
-        enc = tokenizer(
-            texts, truncation=True, max_length=max_seq_len, padding=True, return_tensors="pt"
-        )
-        input_ids_batch = enc["input_ids"]
-        enc = {k: v.to(device) for k, v in enc.items()}
+    ids: List[str] = []
+    texts: List[str] = []
 
-        # 2. Batch Inference
-        with torch.no_grad():
-            outputs = model(**enc)
-            # Logits shape: [batch, seq_len] (squeezed last dim)
-            logits_batch = outputs.logits.squeeze(-1).cpu()
+    total_lines = kw.get("total_lines")
+    expected = (total_lines + world - 1) // world if total_lines else None
 
-        results = []
-        
-        # 3. Post-process individually
-        for i, text in enumerate(texts):
-            if not text:
-                results.append("")
-                continue
+    with open(part_path, "w", encoding="utf-8") as fout:
+        for docid, text in _iter_corpus_strided(
+            in_path, 
+            rank, 
+            world,
+            expected=expected,
+            desc=f"splade rank{rank}",
+            position=rank
+        ):
+            ids.append(docid)
+            texts.append(text)
 
-            # Slice to actual length
-            att_mask = enc["attention_mask"][i].cpu()
-            actual_len = att_mask.sum().item()
-            
-            input_ids = input_ids_batch[i][:actual_len]
-            logits = logits_batch[i][:actual_len]
-            toks = tokenizer.convert_ids_to_tokens(input_ids)
-
-            words, scores = [], []
-            current_word, current_score = None, None
-
-            # DeepCT Aggregation Logic
-            for tok, score in zip(toks, logits.tolist()):
-                if tok in special_tokens: continue
-                if tok.startswith("##"):
-                    if current_word: current_word += tok[2:]
-                    else: current_word, current_score = tok[2:], score
-                else:
-                    if current_word:
-                        words.append(current_word); scores.append(float(current_score))
-                    current_word, current_score = tok, score
-            
-            if current_word:
-                words.append(current_word); scores.append(float(current_score))
-
-            rewritten_tokens = []
-            for w, s in zip(words, scores):
-                prob = 1.0 / (1.0 + math.exp(-s))
-                tf = int(round(scale * prob))
-                if tf > 0:
-                    rewritten_tokens.extend([w] * min(tf, MAX_TF))
-
-            results.append(" ".join(rewritten_tokens) if rewritten_tokens else text)
-        return results
-
-    # Stream processing
-    buffer = []
-    with open(shard_in, "r", encoding="utf-8") as fin, open(part_out, "w", encoding="utf-8") as fout:
-        for line in tqdm(fin, desc=f"GPU {rank} DeepCT", position=rank):
-            obj = json.loads(line)
-            docid = str(obj["id"])
-            text = (obj.get("text") or obj.get("contents") or "").strip()
-            
-            buffer.append({"id": docid, "text": text})
-
-            if len(buffer) >= BATCH_SIZE:
-                processed = process_buffer(buffer)
-                for item, new_txt in zip(buffer, processed):
-                    fout.write(json.dumps({"id": item["id"], "contents": new_txt}, ensure_ascii=False) + "\n")
-                buffer = []
-        
-        if buffer:
-            processed = process_buffer(buffer)
-            for item, new_txt in zip(buffer, processed):
-                fout.write(json.dumps({"id": item["id"], "contents": new_txt}, ensure_ascii=False) + "\n")
-
-
-def _doc2query_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    # torch.cuda.set_device(rank)
-    # device = torch.device(f"cuda:{rank}")
-    
-    n = torch.cuda.device_count()
-    gpu_id = rank % max(1, n)   # safe even if n==0
-    if torch.cuda.is_available():
-        torch.cuda.set_device(gpu_id)
-    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
-
-    model_ckpt = kw["model_ckpt"]
-    queries_per_doc = kw.get("queries_per_doc", 3)
-    batch_size = kw.get("batch_size", 16)
-    
-    t5_tokenizer = T5Tokenizer.from_pretrained(model_ckpt)
-    t5_model = T5ForConditionalGeneration.from_pretrained(model_ckpt).to(device).eval()
-
-    buffer = []
-
-    def process_buffer(buf):
-        if not buf: return []
-        texts = [b["text"] for b in buf]
-        
-        inputs = t5_tokenizer(
-            texts, 
-            max_length=kw.get("max_input_len", 320), 
-            truncation=True, 
-            padding=True, 
-            return_tensors="pt"
-        ).to(device)
-
-        with torch.no_grad():
-            outputs = t5_model.generate(
-                **inputs,
-                max_length=kw.get("max_query_len", 64),
-                do_sample=kw.get("do_sample", True),
-                top_k=kw.get("top_k", 10),
-                num_return_sequences=queries_per_doc
-            )
-        
-        generated = t5_tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        
-        res = []
-        for i, item in enumerate(buf):
-            orig = item["text"]
-            q_slice = generated[i*queries_per_doc : (i+1)*queries_per_doc]
-            gen_q = " ".join(q_slice).replace("\t", " ").strip()
-            res.append(f"{orig} {gen_q}".strip())
-        return res
-
-    with open(shard_in, "r", encoding="utf-8") as fin, open(part_out, "w", encoding="utf-8") as fout:
-        for line in tqdm(fin, desc=f"GPU {rank} Doc2Query", position=rank):
-            obj = json.loads(line)
-            text = (obj.get("text") or obj.get("contents") or "").strip()
-            if not text: continue
-            
-            buffer.append({"id": str(obj["id"]), "text": text})
-
-            if len(buffer) >= batch_size:
-                expanded_texts = process_buffer(buffer)
-                for item, exp in zip(buffer, expanded_texts):
-                    fout.write(json.dumps({"id": item["id"], "contents": exp}, ensure_ascii=False) + "\n")
-                buffer = []
-        
-        if buffer:
-            expanded_texts = process_buffer(buffer)
-            for item, exp in zip(buffer, expanded_texts):
-                fout.write(json.dumps({"id": item["id"], "contents": exp}, ensure_ascii=False) + "\n")
-
-
-def _splade_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    n = torch.cuda.device_count()
-    gpu_id = rank % max(1, n)   # safe even if n==0
-    if torch.cuda.is_available():
-        torch.cuda.set_device(gpu_id)
-    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
-
-    st_model = STSparseEncoder(kw["model_name"], device=str(device))
-    batch_size = kw.get("batch_size", 32)
-    buffer = []
-
-    with open(shard_in, "r", encoding="utf-8") as fin, open(part_out, "w", encoding="utf-8") as fout:
-        for line in tqdm(fin, desc=f"GPU {rank} SPLADE", position=rank):
-            obj = json.loads(line)
-            text = (obj.get("text") or obj.get("contents") or "").strip()
-            if not text: continue
-            
-            buffer.append({"id": str(obj["id"]), "text": text})
-            
-            if len(buffer) >= batch_size:
-                texts = [b["text"] for b in buffer]
-                # encode_document accepts list of strings
+            if len(ids) >= batch_size:
                 emb = st_model.encode_document(texts)
                 pairs_batch = st_model.decode(emb)
 
-                for item, pairs in zip(buffer, pairs_batch):
-                    #if not pairs: continue
+                for did, pairs in zip(ids, pairs_batch):
                     if not pairs:
-                        print("EMPTY pairs for doc", item["id"])
                         continue
-                    vec = SparseEncoder._quantize_pairs(pairs)
-                    fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
-                buffer = []
+                    vec = _quantize_pairs(pairs, scale=scale, topn=topn)
+                    if not vec:
+                        continue
+                    fout.write(json.dumps({"id": did, "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
 
-        if buffer:
-            texts = [b["text"] for b in buffer]
+                ids, texts = [], []
+
+        if ids:
             emb = st_model.encode_document(texts)
             pairs_batch = st_model.decode(emb)
-            for item, pairs in zip(buffer, pairs_batch):
-                #if not pairs: continue
+            for did, pairs in zip(ids, pairs_batch):
                 if not pairs:
-                    print("EMPTY pairs for doc", item["id"])
                     continue
-                vec = SparseEncoder._quantize_pairs(pairs)
-                fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
+                vec = _quantize_pairs(pairs, scale=scale, topn=topn)
+                if not vec:
+                    continue
+                fout.write(json.dumps({"id": did, "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
 
 
-def _unicoil_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    # torch.cuda.set_device(rank)
-    # device = torch.device(f"cuda:{rank}")
-    
-    n = torch.cuda.device_count()
-    gpu_id = rank % max(1, n)   # safe even if n==0
-    if torch.cuda.is_available():
-        torch.cuda.set_device(gpu_id)
-    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
-    
-    doc_encoder = UniCoilDocumentEncoder("castorini/unicoil-msmarco-passage", device=str(device))
-    
-    # Pruning Constants
-    SCALE = 100
-    _PUNC = set(list('.,;:!?()[]{}\'"“”‘’—–-/%'))
+_PUNC = set(list('.,;:!?()[]{}\'"“”‘’—–-/%'))
+_is_bad = re.compile(r'^\W+$').match
 
-    def prune(enc_dict):
+
+def _worker_unicoil(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
+    # Keep your exact model choice here
+    encoder_name = kw.get("encoder_name", "castorini/unicoil-msmarco-passage")
+    doc_encoder = UniCoilDocumentEncoder(encoder_name, device=device)
+
+    scale = int(kw.get("scale", 100))
+    min_after = int(kw.get("min_after_scale", 1))
+    topn = int(kw.get("topn", 500))
+
+    def normalize(enc_out):
+        if isinstance(enc_out, dict):
+            return enc_out
+        if isinstance(enc_out, list):
+            if enc_out and isinstance(enc_out[0], dict):
+                return enc_out[0]
+            if enc_out and isinstance(enc_out[0], (list, tuple)) and len(enc_out[0]) == 2:
+                return {t: float(w) for t, w in enc_out}
+        return {}
+
+    def prune_scale(enc_dict):
         items = []
-        for t, w in enc_dict.items():
-            try: w = float(w)
-            except: continue
-            if w > 0 and t not in _PUNC:
-                val = int(round(w * SCALE))
-                if val >= 1: items.append((t, val))
-        return dict(items)
+        for tok, w in enc_dict.items():
+            try:
+                w = float(w)
+            except Exception:
+                continue
+            if w <= 0 or tok in _PUNC or _is_bad(tok):
+                continue
+            iw = int(round(w * scale))
+            if iw >= min_after:
+                items.append((tok, iw))
+        if topn and len(items) > topn:
+            items.sort(key=lambda x: x[1], reverse=True)
+            items = items[:topn]
+        return {t: iw for t, iw in items}
 
-    batch_size = 64
-    buffer = []
-
-    with open(shard_in, "r", encoding="utf-8") as fin, open(part_out, "w", encoding="utf-8") as fout:
-        for line in tqdm(fin, desc=f"GPU {rank} UniCoil", position=rank):
-            obj = json.loads(line)
-            text = (obj.get("text") or obj.get("contents") or "").strip()
-            if not text: continue
-            
-            buffer.append({"id": str(obj["id"]), "text": text})
-
-            if len(buffer) >= batch_size:
-                texts = [b["text"] for b in buffer]
-                
-                # Attempt batch encoding
-                try:
-                    batch_encs = doc_encoder.encode(texts)
-                    # Handle single-item return
-                    if isinstance(batch_encs, dict): batch_encs = [batch_encs]
-                except:
-                    # Fallback
-                    batch_encs = [doc_encoder.encode(t) for t in texts]
-
-                for item, enc in zip(buffer, batch_encs):
-                    if isinstance(enc, list): enc = {t: float(w) for t, w in enc}
-                    vec = prune(enc)
-                    if vec:
-                        #fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}) + "\n")
-                        fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
-                buffer = []
-
-        if buffer:
-            texts = [b["text"] for b in buffer]
-            batch_encs = [doc_encoder.encode(t) for t in texts]
-            for item, enc in zip(buffer, batch_encs):
-                if isinstance(enc, list): enc = {t: float(w) for t, w in enc}
-                vec = prune(enc)
-                if vec:
-                    #fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": ""}) + "\n")
-                    fout.write(json.dumps({"id": item["id"], "vector": vec, "contents": item["text"]}, ensure_ascii=False) + "\n")
+    with open(part_path, "w", encoding="utf-8") as fout:
+        for docid, text in _iter_corpus_strided(in_path, rank, world):
+            enc = doc_encoder.encode(text)
+            enc = normalize(enc)
+            vec = prune_scale(enc)
+            if not vec:
+                continue
+            fout.write(json.dumps({"id": docid, "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
 
 
-def _sparta_worker(rank: int, shard_in: str, part_out: str, kw: Dict[str, Any]) -> None:
-    # torch.cuda.set_device(rank)
-    # device = torch.device(f"cuda:{rank}")
-    
-    n = torch.cuda.device_count()
-    gpu_id = rank % max(1, n)   # safe even if n==0
-    if torch.cuda.is_available():
-        torch.cuda.set_device(gpu_id)
-    device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
-    
+def _worker_sparta(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
     model_name = kw["model_name"]
-    sparta = SPARTA(model_name, device=str(device))
-    
-    # Large chunk size to feed SPARTA's internal batcher, but not entire file
-    CHUNK_SIZE = 5000 
-    buffer = []
+    batch_size = int(kw.get("batch_size", 4))
 
-    with open(shard_in, "r", encoding="utf-8") as fin, open(part_out, "w", encoding="utf-8") as fout:
-        for line in tqdm(fin, desc=f"GPU {rank} SPARTA", position=rank):
-            obj = json.loads(line)
-            text = (obj.get("text") or obj.get("contents") or "").strip()
-            if not text: continue
-            
-            buffer.append({"_id": str(obj["id"]), "text": text})
+    sparta = SPARTA(model_name, device=device)
 
-            if len(buffer) >= CHUNK_SIZE:
-                id2text = {b["_id"]: b["text"] for b in buffer}
-                
-                # encode_corpus handles internal batching
-                vecs = sparta.encode_corpus(buffer, batch_size=kw.get("batch_size", 16))
+    buf: List[Dict[str, str]] = []
+    with open(part_path, "w", encoding="utf-8") as fout:
+        for docid, text in _iter_corpus_strided(in_path, rank, world):
+            buf.append({"_id": docid, "text": text})
+            if len(buf) >= batch_size:
+                vecs = sparta.encode_corpus(buf, batch_size=batch_size)  # dict[id]->dict[token]->w
                 for did, vec in vecs.items():
-                    if vec:
-                        fout.write(json.dumps({"id": did, "vector": vec, "contents": id2text[did]}) + "\n")
-                buffer = []
-        
-        if buffer:
-            id2text = {b["_id"]: b["text"] for b in buffer}
-            vecs = sparta.encode_corpus(buffer, batch_size=kw.get("batch_size", 16))
+                    if not vec:
+                        continue
+                    fout.write(json.dumps({"id": did, "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
+                buf = []
+
+        if buf:
+            vecs = sparta.encode_corpus(buf, batch_size=batch_size)
             for did, vec in vecs.items():
-                if vec:
-                    fout.write(json.dumps({"id": did, "vector": vec, "contents": id2text[did]}) + "\n")
+                if not vec:
+                    continue
+                fout.write(json.dumps({"id": did, "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
 
 
-# -----------------------------------------------------------------------------
-# Main Interface
-# -----------------------------------------------------------------------------
+def _worker_deepct(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
+    model_name = kw["model_name"]
+    max_seq_len = int(kw.get("max_seq_len", 512))
+    scale = float(kw.get("scale", 100.0))
+    max_tf = int(kw.get("max_tf", 20))
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForTokenClassification.from_pretrained(model_name).to(device)
+    model.eval()
+
+    special_tokens = set(tokenizer.all_special_tokens)
+
+    def rewrite_text(text: str) -> str:
+        text = text.strip()
+        if not text:
+            return ""
+
+        enc = tokenizer(text, truncation=True, max_length=max_seq_len, return_tensors="pt")
+        enc = {k: v.to(device) for k, v in enc.items()}
+
+        with torch.no_grad():
+            logits = model(**enc).logits.squeeze(-1).squeeze(0)  # [seq_len]
+
+        input_ids = enc["input_ids"].squeeze(0)
+        toks = tokenizer.convert_ids_to_tokens(input_ids)
+
+        words: List[str] = []
+        scores: List[float] = []
+        cur_word = None
+        cur_score = None
+
+        for tok, score in zip(toks, logits.tolist()):
+            if tok in special_tokens:
+                continue
+            if tok.startswith("##"):
+                sub = tok[2:]
+                if cur_word is None:
+                    cur_word, cur_score = sub, score
+                else:
+                    cur_word += sub
+            else:
+                if cur_word is not None:
+                    words.append(cur_word)
+                    scores.append(float(cur_score))
+                cur_word, cur_score = tok, score
+
+        if cur_word is not None:
+            words.append(cur_word)
+            scores.append(float(cur_score))
+
+        rewritten_tokens: List[str] = []
+        for w, s in zip(words, scores):
+            prob = 1.0 / (1.0 + math.exp(-float(s))) # sigmoid
+            tf = int(round(scale * prob))
+            tf = min(tf, max_tf)
+            if tf > 0:
+                rewritten_tokens.extend([w] * tf)
+
+        return " ".join(rewritten_tokens) if rewritten_tokens else text
+
+    with open(part_path, "w", encoding="utf-8") as fout:
+        for docid, text in _iter_corpus_strided(in_path, rank, world):
+            new_text = rewrite_text(text)
+            fout.write(json.dumps({"id": docid, "contents": new_text}, ensure_ascii=False) + "\n")
+
+
+def _worker_doc2query(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
+    model_ckpt = kw["model_ckpt"]
+    queries_per_doc = int(kw.get("queries_per_doc", 3))
+    max_input_len = int(kw.get("max_input_len", 320))
+    max_query_len = int(kw.get("max_query_len", 64))
+    batch_size = int(kw.get("batch_size", 16))
+    top_k = int(kw.get("top_k", 10))
+    do_sample = bool(kw.get("do_sample", True))
+
+    t5_tokenizer = T5Tokenizer.from_pretrained(model_ckpt)
+    t5_model = T5ForConditionalGeneration.from_pretrained(model_ckpt).to(device)
+    t5_model.eval()
+
+    ids: List[str] = []
+    texts: List[str] = []
+
+    with open(part_path, "w", encoding="utf-8") as fout:
+        for docid, text in _iter_corpus_strided(in_path, rank, world):
+            ids.append(docid)
+            texts.append(text)
+
+            if len(ids) >= batch_size:
+                inputs = t5_tokenizer(
+                    texts,
+                    max_length=max_input_len,
+                    truncation=True,
+                    padding=True,
+                    return_tensors="pt",
+                ).to(device)
+
+                with torch.no_grad():
+                    outputs = t5_model.generate(
+                        **inputs,
+                        max_length=max_query_len,
+                        do_sample=do_sample,
+                        top_k=top_k,
+                        num_return_sequences=queries_per_doc
+                    )
+                generated = t5_tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+                for i in range(len(texts)):
+                    q_slice = generated[i * queries_per_doc:(i + 1) * queries_per_doc]
+                    expanded = (texts[i] + " " + " ".join(q_slice)).replace("\t", " ").strip()
+                    fout.write(json.dumps({"id": ids[i], "contents": expanded}, ensure_ascii=False) + "\n")
+
+                ids, texts = [], []
+
+        if ids:
+            inputs = t5_tokenizer(
+                texts,
+                max_length=max_input_len,
+                truncation=True,
+                padding=True,
+                return_tensors="pt",
+            ).to(device)
+            with torch.no_grad():
+                outputs = t5_model.generate(
+                    **inputs,
+                    max_length=max_query_len,
+                    do_sample=do_sample,
+                    top_k=top_k,
+                    num_return_sequences=queries_per_doc
+                )
+            generated = t5_tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            for i in range(len(texts)):
+                q_slice = generated[i * queries_per_doc:(i + 1) * queries_per_doc]
+                expanded = (texts[i] + " " + " ".join(q_slice)).replace("\t", " ").strip()
+                fout.write(json.dumps({"id": ids[i], "contents": expanded}, ensure_ascii=False) + "\n")
+
+
+# -------------------------
+# Your class (keep init/query encoders)
+# -------------------------
 
 class SparseEncoder:
     def __init__(self, model_name, model_key, device):
         self.model_name = model_name
         self.model_key = model_key
-
-        if isinstance(device, torch.device):
-            self.device = device
-        else:
-            self.device = torch.device(device) if isinstance(device, str) else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        self.n_gpu = torch.cuda.device_count()
-
-        # Instantiate query encoders for immediate use if needed (CPU side)
+        self.device = device.type
         self.query_encoder = None
         if "splade" in model_name:
-            self.query_encoder = SpladeQueryEncoder(model_name, device=self.device)
+            self.query_encoder = SpladeQueryEncoder(model_name, device=device)
         if "unicoil" in model_name:
-            self.query_encoder = UniCoilQueryEncoder("castorini/unicoil-noexp-msmarco-passage", device=self.device)
+            self.query_encoder = UniCoilQueryEncoder("castorini/unicoil-noexp-msmarco-passage", device=device)
         if "sparta" in model_name:
-            self.query_encoder = SPARTA(model_name, device=str(self.device))
+            self.query_encoder = SPARTA(model_name, device=self.device)
 
-    @staticmethod
-    def _quantize_pairs(pairs):
-        SCALE = 100
-        MIN_AFTER_SCALE = 1
-        TOPN = 256
-        items = []
-        for tok, w in pairs:
-            w = float(w)
-            if w <= 0: continue
-            iw = int(round(w * SCALE))
-            if iw >= MIN_AFTER_SCALE: items.append((tok, iw))
-        
-        if TOPN and len(items) > TOPN:
-            items.sort(key=lambda x: x[1], reverse=True)
-            items = items[:TOPN]
-        return {t: iw for t, iw in items}
-
-    def _deepct_rewrite_corpus(self, corpus_dir: str, encoding_dir: str, max_seq_len: int = 512, scale: float = 100.0) -> str:
-        in_path = os.path.join(corpus_dir, "corpus.jsonl")
-        out_path = os.path.join(encoding_dir, "corpus.jsonl")
-        
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            print(f"[DeepCT] Output exists: {out_path}")
-            return encoding_dir
-
-        # Use Sharded Multiprocessing if > 1 GPU
-        num_workers = self.n_gpu if self.n_gpu > 1 else 1
-        print(f"[DeepCT] Running with {num_workers} workers.")
-        
-        _run_on_all_gpus_sharded(
-            in_path=in_path,
-            out_path=out_path,
-            num_gpus=num_workers,
-            worker_fn=_deepct_worker,
-            worker_kwargs={"model_name": self.model_name, "max_seq_len": max_seq_len, "scale": scale},
-            shard_cache_root=os.path.join(encoding_dir, ".shards"),
-        )
-        return encoding_dir
-
-    def build_d2q_docs(self, docs_df: pd.DataFrame, out_dir: str, model_ckpt: str, **kwargs) -> str:
-        print("\n--- Expanding Corpus with doc2query ---")
-        os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, "corpus.jsonl")
-
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            return out_dir
-
-        # Write temp input
-        tmp_in = os.path.join(out_dir, "doc2query_input.jsonl")
-        if not (os.path.exists(tmp_in) and os.path.getsize(tmp_in) > 0):
-            with open(tmp_in, "w", encoding="utf-8") as f:
-                for did, text in zip(docs_df["doc_id"].astype(str), docs_df["text"].astype(str)):
-                    f.write(json.dumps({"id": did, "contents": text}, ensure_ascii=False) + "\n")
-
-        num_workers = self.n_gpu if self.n_gpu > 1 else 1
-        print(f"[doc2query] Running with {num_workers} workers.")
-        
-        _run_on_all_gpus_sharded(
-            in_path=tmp_in,
-            out_path=out_path,
-            num_gpus=num_workers,
-            worker_fn=_doc2query_worker,
-            worker_kwargs={"model_ckpt": model_ckpt, **kwargs},
-            shard_cache_root=os.path.join(out_dir, ".shards"),
-        )
-        return out_dir
+    # Keep your build_d2q_docs if you still need the DataFrame variant
+    # (but multi-GPU doc2query corpus encoding now lives in encode() too).
 
     def encode(self, corpus_dir: str, encoding_dir: str):
-        if self.model_name == "bm25": return None
-        os.makedirs(encoding_dir, exist_ok=True)
+        if self.model_name == "bm25":
+            return None
 
-        if "deepct" in self.model_name.lower():
-            return self._deepct_rewrite_corpus(corpus_dir, encoding_dir)
+        os.makedirs(encoding_dir, exist_ok=True)
 
         in_path = os.path.join(corpus_dir, "corpus.jsonl")
         out_path = os.path.join(encoding_dir, "corpus.jsonl")
-        
+
+        total_lines = _count_lines(in_path)
+
+        # IMPORTANT: reuse only if the FINAL output exists
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            print(f"Encodings exist at {out_path}")
             return encoding_dir
 
-        num_workers = self.n_gpu if self.n_gpu > 1 else 1
-        print(f"[Encode] Model: {self.model_name} | Workers: {num_workers}")
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA not available; this no-CLI multi-GPU encoder expects GPUs")
 
-        if "sparta" in self.model_name.lower():
-            _run_on_all_gpus_sharded(
-                in_path, out_path, num_workers, _sparta_worker,
-                worker_kwargs={"model_name": self.model_name},
-                shard_cache_root=os.path.join(encoding_dir, ".shards")
+        world = min(4, torch.cuda.device_count())
+
+        name = self.model_name.lower()
+
+        if "deepct" in name:
+            _spawn_multi_gpu(
+                mode="deepct",
+                in_path=in_path,
+                out_path=out_path,
+                world=world,
+                worker_kwargs={
+                    "model_name": self.model_name,
+                    "max_seq_len": 512,
+                    "scale": 100.0,
+                    "max_tf": 20,
+                },
             )
             return encoding_dir
 
-        if "unicoil" in self.model_name.lower():
-            _run_on_all_gpus_sharded(
-                in_path, out_path, num_workers, _unicoil_worker,
-                worker_kwargs={},
-                shard_cache_root=os.path.join(encoding_dir, ".shards")
+        if "sparta" in name:
+            print("TEST\nTEST\nTEST")
+            _spawn_multi_gpu(
+                mode="sparta",
+                in_path=in_path,
+                out_path=out_path,
+                world=world,
+                worker_kwargs={
+                    "model_name": self.model_name,
+                    "batch_size": 4,
+                },
             )
             return encoding_dir
 
-        if "splade" in self.model_name.lower():
-            _run_on_all_gpus_sharded(
-                in_path, out_path, num_workers, _splade_worker,
-                worker_kwargs={"model_name": self.model_name},
-                shard_cache_root=os.path.join(encoding_dir, ".shards")
+        if "unicoil" in name:
+            _spawn_multi_gpu(
+                mode="unicoil",
+                in_path=in_path,
+                out_path=out_path,
+                world=world,
+                worker_kwargs={
+                    "encoder_name": "castorini/unicoil-msmarco-passage",
+                    "scale": 100,
+                    "min_after_scale": 1,
+                    "topn": 500,
+                },
             )
-            if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
-                raise RuntimeError(f"[SPLADE] Encoding failed: missing/empty {out_path}")
             return encoding_dir
 
-        # Fallback CLI
+        if "splade" in name:
+            _spawn_multi_gpu(
+                mode="splade",
+                in_path=in_path,
+                out_path=out_path,
+                world=world,
+                worker_kwargs={
+                    "model_name": self.model_name,
+                    "batch_size": 32,
+                    "scale": 100,
+                    "topn": 256,
+                    "total_lines": total_lines,
+                },
+            )
+            return encoding_dir
+
+        if "doc2query" in name:
+            # You MUST provide model_ckpt. Put it in your MODELS config or pass it in some other way.
+            # Example: MODELS["doc2query"]["ckpt"]
+            from src.configs.models import sparse_models
+            model_ckpt = sparse_models["doc2query"]["model_path"]
+
+            _spawn_multi_gpu(
+                mode="doc2query",
+                in_path=in_path,
+                out_path=out_path,
+                world=world,
+                worker_kwargs={
+                    "model_ckpt": model_ckpt,
+                    "queries_per_doc": 3,
+                    "max_input_len": 320,
+                    "max_query_len": 64,
+                    "batch_size": 16,
+                    "top_k": 10,
+                    "do_sample": True,
+                },
+            )
+            return encoding_dir
+
+        # Fallback to your original pyserini.encode command path (single GPU/CPU)
+        # (kept as-is)
         cmd = [
             sys.executable, "-m", "pyserini.encode",
-            "input", "--corpus", corpus_dir, "--fields", "text",
+            "input",  "--corpus", corpus_dir, "--fields", "text",
             "output", "--embeddings", encoding_dir,
             "encoder", "--encoder", self.model_name,
-            "--batch", "32", "--device", str(self.device),
+            "--batch", "32", "--device", self.device
         ]
         subprocess.run(cmd, check=True)
         return encoding_dir
-    

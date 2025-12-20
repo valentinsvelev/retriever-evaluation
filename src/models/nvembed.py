@@ -17,7 +17,7 @@ from src.configs.models import MODELS
 from src.evaluator import Evaluator
 
 import shutil
-from src.misc import save_dense_embeddings, load_dense_embeddings, append_dense_embeddings_jsonl
+from src.misc import save_dense_embeddings, load_dense_embeddings, append_dense_embeddings_hdf5
 
 
 DATASET_MAPPING = {
@@ -94,53 +94,49 @@ class NVEmbedEncoder:
 
 
     def encode(self, texts, is_query=False, batch_size=4, show_progress_bar=True):
-        """
-        Encodes a list of texts using the loaded NV-Embed-v2 model.
-        This method now handles manual batching, tokenization, model inference, and pooling.
-        """
         if self.model is None or self.tokenizer is None:
-            raise RuntimeError("Model is not loaded. Call _load_model() first (should happen in __init__).")
+            raise RuntimeError("Model is not loaded.")
 
-        # Determine the instruction prefix (e.g., "query: " or "passage: ")
         instruction = self.config.get('query_instruction') if is_query else self.config.get('doc_instruction')
         if instruction is None:
             instruction = ""
-        
+
         all_embeddings = []
         desc = "Encoding Queries" if is_query else "Encoding Documents"
 
         for i in tqdm(range(0, len(texts), batch_size), desc=desc, disable=not show_progress_bar):
             batch_texts = texts[i:i + batch_size]
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 batch_embs = self.model.encode(
                     batch_texts,
                     instruction=instruction,
                     max_length=self.max_length,
                 )
 
-            # Convert to torch tensor if returned as numpy
             if isinstance(batch_embs, np.ndarray):
                 batch_embs = torch.from_numpy(batch_embs)
-            elif not isinstance(batch_embs, torch.Tensor):
-                raise TypeError(f"Unexpected embedding type from model.encode: {type(batch_embs)}")
+
+            # CRITICAL: normalize + move to CPU RIGHT HERE
+            if isinstance(batch_embs, torch.Tensor):
+                batch_embs = F.normalize(batch_embs, p=2, dim=1)
+                batch_embs = batch_embs.detach().to("cpu", non_blocking=True)
 
             all_embeddings.append(batch_embs)
 
+            # CRITICAL: drop any GPU refs ASAP
+            del batch_embs, batch_texts
+            # # optional, but helps long loops
+            # if torch.cuda.is_available():
+            #     torch.cuda.empty_cache()
+
         if not all_embeddings:
             hidden_size = self.model.config.hidden_size
-            return torch.empty(0, hidden_size).cpu()
+            return torch.empty(0, hidden_size)
 
-        # Concatenate all batches
-        embeddings = torch.cat(all_embeddings, dim=0)
+        return torch.cat(all_embeddings, dim=0)
 
-        # Normalize to unit length (recommended for cosine retrieval)
-        embeddings = F.normalize(embeddings, p=2, dim=1)
 
-        # Move to CPU for FAISS / further use
-        return embeddings.detach().cpu()
-
-        
     def run(self, model: str, handler: DataHandler, ds: str, device: str, top_k: int = 1001, variant: str | None = None, save_report: bool = False, archive: bool = True):
         """
         Run NV-Embed in the same style as run.py:
@@ -197,7 +193,7 @@ class NVEmbedEncoder:
         
         for d in docs_iter:        
             doc_texts = [doc.get("text", "") or "" for doc in d]
-            batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]  # <-- rename
+            batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]
             all_doc_ids.extend(batch_doc_ids)
             
             # Compute document embeddings
@@ -216,7 +212,7 @@ class NVEmbedEncoder:
             emb_path = os.path.join(out_dir, f"{corpus_label}.jsonl")
             
             if dataset_id == "irds:msmarco-passage/dev/small":
-                append_dense_embeddings_jsonl(batch_embeddings, batch_doc_ids, emb_path)
+                append_dense_embeddings_hdf5(batch_embeddings, batch_doc_ids, emb_path)
             
             # Instantiate indexer
             if indexer is None:
@@ -226,6 +222,12 @@ class NVEmbedEncoder:
             t = time.time()
             indexer.build(batch_embeddings)
             timing["index_build_seconds"] += time.time() - t
+
+            # Free memory
+            del d, doc_texts, batch_doc_ids, batch_embeddings
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Load queries
         _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)

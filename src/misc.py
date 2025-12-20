@@ -8,6 +8,7 @@ import re
 import torch
 import ir_datasets as irds
 from src.data_handler import DataHandler
+import h5py
 
 
 def create_folder_structure(only_local: bool = False):
@@ -130,3 +131,32 @@ def append_dense_embeddings_jsonl(embeddings, doc_ids, path):
                 "embedding": emb.tolist()
             }
             f.write(json.dumps(rec) + "\n")
+
+def append_dense_embeddings_hdf5(embeddings, doc_ids, path):
+    if isinstance(embeddings, torch.Tensor):
+        arr = embeddings.detach().cpu().numpy()
+    arr = arr.astype("float16")
+
+    with h5py.File(path, "a") as f:
+        if "embeddings" not in f:
+            f.create_dataset(
+                "embeddings",
+                data=arr,
+                maxshape=(None, arr.shape[1]),
+                chunks=True,
+                compression="gzip",
+            )
+            f.create_dataset(
+                "doc_ids",
+                data=np.array(doc_ids, dtype="S"),
+                maxshape=(None,),
+                chunks=True,
+                compression="gzip",
+            )
+        else:
+            n = f["embeddings"].shape[0]
+            f["embeddings"].resize(n + arr.shape[0], axis=0)
+            f["embeddings"][n:] = arr
+
+            f["doc_ids"].resize(n + len(doc_ids), axis=0)
+            f["doc_ids"][n:] = np.array(doc_ids, dtype="S")

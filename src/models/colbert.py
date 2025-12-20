@@ -21,7 +21,7 @@ class ColBERT:
                 max_document_length=512,
                 split_documents=True,
                 use_faiss=True,
-                bsize=128
+                bsize=64
             )
         else:
             print(f"Found existing index at '{self.index_path}'. Skipping indexing.")

@@ -113,24 +113,6 @@ def run(
         query_ids   = queries["query_id"].astype(str).tolist()
         query_texts = queries["text"].tolist()
         
-        
-        
-        # # approach #2
-        # _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)
-        # query_texts = [
-        #     query.get("text", "") or ""
-        #     for batch in queries_iter
-        #     for query in batch
-        # ]
-        
-        # docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant)
-        # docs_text = [
-        #     query.get("text", "") or ""
-        #     for batch in docs_iter
-        #     for query in batch
-        # ]
-        
-
         timing["num_queries"] = len(query_ids)
 
         # ---------------------------
@@ -312,7 +294,7 @@ def run(
             # Encode Corpus (or Load Cache)
             if os.path.exists(emb_path):
                 print(f"[TART] Loading cached corpus embeddings from {emb_path}")
-                corpus_embeddings, doc_ids = load_dense_embeddings(emb_path)
+                corpus_embeddings, loaded_doc_ids = load_dense_embeddings(emb_path)
             else:
                 print(f"[TART] Encoding corpus with Contriever...")
                 t0 = time.time()
@@ -335,7 +317,7 @@ def run(
             timing["query_encoding_seconds"] += time.time() - t0
             
             # Retrieve Candidates
-            #rerank_depth = min(top_k, 100) 
+            #rerank_depth = min(top_k, 100)
             t0 = time.time()
             scores_1st, indices_1st = indexer.search(query_embeddings, top_k=top_k)
             timing["search_seconds"] += time.time() - t0

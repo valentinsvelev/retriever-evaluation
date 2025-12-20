@@ -37,7 +37,7 @@ def _join_with_sep(tokenizer, instr: str, text: str) -> str:
         return f"{instr} {tokenizer.sep_token} {text}"
     return f"{instr} [SEP] {text}"
 
-def generate_docs_for_query_expansion(query_ids: list, query_texts: list, model_name: str, device: str, path: str, batch_size: int = 8):
+def generate_docs_for_query_expansion(query_ids: list, query_texts: list, model_name: str, device: str, path: str, batch_size: int = 64):
     """Generate documents for HyDE and query2doc using Qwen2.5-7B-Instruct."""
 
     # Load cached output if available
@@ -59,7 +59,7 @@ def generate_docs_for_query_expansion(query_ids: list, query_texts: list, model_
         trust_remote_code=True,
         torch_dtype=torch.float16,
         device_map="auto",
-    ).to(device)
+    )#.to(device)
 
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -115,7 +115,7 @@ def generate_docs_for_query_expansion(query_ids: list, query_texts: list, model_
             padding=True,
             truncation=True,
             max_length=768,
-        ).to(device)
+        )#.to(device)
 
         with torch.no_grad():
             outputs = model.generate(

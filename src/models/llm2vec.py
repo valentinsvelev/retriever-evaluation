@@ -17,7 +17,7 @@ from src.configs.models import MODELS
 from src.evaluator import Evaluator
 
 import shutil
-from src.misc import save_dense_embeddings, load_dense_embeddings, append_dense_embeddings_jsonl
+from src.misc import save_dense_embeddings, load_dense_embeddings, append_dense_embeddings_hdf5
 
 
 DATASET_MAPPING = {
@@ -223,7 +223,7 @@ class LLM2VecEncoder:
             emb_path = os.path.join(out_dir, f"{corpus_label}.jsonl")
             
             if dataset_id == "irds:msmarco-passage/dev/small":
-                append_dense_embeddings_jsonl(batch_embeddings, batch_doc_ids, emb_path)
+                append_dense_embeddings_hdf5(batch_embeddings, batch_doc_ids, emb_path)
             
             # Instantiate indexer
             if indexer is None:
