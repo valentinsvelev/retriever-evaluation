@@ -1,4 +1,5 @@
 import os
+import torch
 from tqdm import tqdm
 from ragatouille import RAGPretrainedModel
 
@@ -7,7 +8,7 @@ class ColBERT:
     def __init__(self, dataset_name, corpus, queries):
         self.corpus = corpus
         self.queries = queries
-        self.model = RAGPretrainedModel.from_pretrained(pretrained_model_name_or_path="colbert-ir/colbertv2.0", verbose=1, n_gpu=4)
+        self.model = RAGPretrainedModel.from_pretrained(pretrained_model_name_or_path="colbert-ir/colbertv2.0", n_gpu=1)
         self.index_name = f"{dataset_name}_colbertv2_index"
         self.index_path = os.path.join("outputs/indexes", self.index_name)
 
@@ -21,7 +22,7 @@ class ColBERT:
                 max_document_length=512,
                 split_documents=True,
                 use_faiss=True,
-                bsize=64
+                bsize=256
             )
         else:
             print(f"Found existing index at '{self.index_path}'. Skipping indexing.")

@@ -68,7 +68,7 @@ def main():
     results_per_query = {}
     runs_cache = {}
 
-    for model in ["bm25", "gtr"]: # ["sparta", "deepct"]:
+    for model in ["gtr", "sparta", "colbert"]: # ["sparta", "deepct"]:
         for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)

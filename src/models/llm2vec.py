@@ -153,6 +153,8 @@ class LLM2VecEncoder:
                 batch_embs = self._mean_pool(outputs.last_hidden_state, encoded["attention_mask"])
                 all_embs.append(batch_embs.cpu())
 
+                del batch_embs
+
         embeddings = torch.cat(all_embs, dim=0)
         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
 

@@ -70,8 +70,8 @@ def main():
     results_per_query = {}
     runs_cache = {}
 
-    for model in ["sparta"]:
-        for dataset in ["irds:beir/scifact/test"]:
+    for model in ["colbert"]:
+        for dataset in ["irds:beir/arguana", "irds:beir/scifact/test", "irds:beir/scidocs"]:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)
 

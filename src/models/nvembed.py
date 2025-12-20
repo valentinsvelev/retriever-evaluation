@@ -81,6 +81,9 @@ class NVEmbedEncoder:
             trust_remote_code=True,
             #device_map="auto",
         )
+
+        if hasattr(self.model.config, "use_cache"):
+            self.model.config.use_cache = False
         
         # --- Step 3: Move to device and set to eval mode ---
         # IMPORTANT: move to GPU first
@@ -93,42 +96,65 @@ class NVEmbedEncoder:
         print(f"NV-Embed model loaded successfully and moved to {self.device}.")
 
 
-    def encode(self, texts, is_query=False, batch_size=4, show_progress_bar=True):
+    def encode(
+        self,
+        texts,
+        is_query=False,
+        batch_size=16,                 # global/effective batch
+        micro_batch_size=4,            # GPU microbatch
+        show_progress_bar=True,
+    ):
         if self.model is None or self.tokenizer is None:
             raise RuntimeError("Model is not loaded.")
 
-        instruction = self.config.get('query_instruction') if is_query else self.config.get('doc_instruction')
-        if instruction is None:
-            instruction = ""
+        if micro_batch_size > batch_size:
+            micro_batch_size = batch_size
+        if batch_size % micro_batch_size != 0:
+            # not strictly required, but keeps shapes predictable
+            # we'll still handle the last uneven microbatch fine.
+            pass
+
+        instruction = self.config.get("query_instruction") if is_query else self.config.get("doc_instruction")
+        instruction = instruction or ""
 
         all_embeddings = []
         desc = "Encoding Queries" if is_query else "Encoding Documents"
 
+        # outer loop: global batches
         for i in tqdm(range(0, len(texts), batch_size), desc=desc, disable=not show_progress_bar):
-            batch_texts = texts[i:i + batch_size]
+            big_batch_texts = texts[i : i + batch_size]
+
+            # inner loop: microbatches
+            micro_embs_cpu = []
 
             with torch.inference_mode():
-                batch_embs = self.model.encode(
-                    batch_texts,
-                    instruction=instruction,
-                    max_length=self.max_length,
-                )
+                for j in range(0, len(big_batch_texts), micro_batch_size):
+                    micro_texts = big_batch_texts[j : j + micro_batch_size]
 
-            if isinstance(batch_embs, np.ndarray):
-                batch_embs = torch.from_numpy(batch_embs)
+                    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        embs = self.model.encode(
+                            micro_texts,
+                            instruction=instruction,
+                            max_length=self.max_length,
+                        )
 
-            # CRITICAL: normalize + move to CPU RIGHT HERE
-            if isinstance(batch_embs, torch.Tensor):
-                batch_embs = F.normalize(batch_embs, p=2, dim=1)
-                batch_embs = batch_embs.detach().to("cpu", non_blocking=True)
+                    if isinstance(embs, np.ndarray):
+                        embs = torch.from_numpy(embs)
 
-            all_embeddings.append(batch_embs)
+                    if isinstance(embs, torch.Tensor):
+                        # normalize on GPU, then move to CPU (blocking copy)
+                        embs = F.normalize(embs, p=2, dim=1).detach().cpu()
 
-            # CRITICAL: drop any GPU refs ASAP
-            del batch_embs, batch_texts
-            # # optional, but helps long loops
-            # if torch.cuda.is_available():
-            #     torch.cuda.empty_cache()
+                    micro_embs_cpu.append(embs)
+
+                    # drop refs ASAP
+                    del embs, micro_texts
+
+            # stitch microbatches back into the original global batch order
+            big_batch_embs = torch.cat(micro_embs_cpu, dim=0)
+            all_embeddings.append(big_batch_embs)
+
+            del big_batch_embs, micro_embs_cpu, big_batch_texts
 
         if not all_embeddings:
             hidden_size = self.model.config.hidden_size
@@ -137,14 +163,10 @@ class NVEmbedEncoder:
         return torch.cat(all_embeddings, dim=0)
 
 
+
     def run(self, model: str, handler: DataHandler, ds: str, device: str, top_k: int = 1001, variant: str | None = None, save_report: bool = False, archive: bool = True):
         """
-        Run NV-Embed in the same style as run.py:
-        - dataset / corpus mapping
-        - corpus embedding caching
-        - FAISS search
-        - timing dict
-        - results + scores compatible with other models
+        Run NV-Embed in the same style as run.py.
         """
 
         # ---------------------------

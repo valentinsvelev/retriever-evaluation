@@ -235,7 +235,7 @@ def run(
             # --- Corpus encoding ---
             if os.path.exists(emb_path):
                 print(f"Loading cached corpus embeddings from {emb_path}")
-                corpus_embeddings, doc_ids = load_dense_embeddings(emb_path)
+                corpus_embeddings, loaded_doc_ids = load_dense_embeddings(emb_path)
             else:
                 print(f"No cached corpus embeddings at {emb_path}, encoding corpus...")
                 t0 = time.time()

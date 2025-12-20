@@ -125,7 +125,7 @@ if __name__ == "__main__":
     for dataset in DATASETS:
         base_label = dataset.replace("/", "_").replace(":", "_")
         run_key = (dataset, model)
-    
+
         for variant in get_dataset_variants(handler, dataset):
             print(f"\n▶ Running {model} on {dataset}; variant: {variant}")
     

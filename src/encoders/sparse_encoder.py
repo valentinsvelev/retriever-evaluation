@@ -518,7 +518,6 @@ class SparseEncoder:
             return encoding_dir
 
         if "sparta" in name:
-            print("TEST\nTEST\nTEST")
             _spawn_multi_gpu(
                 mode="sparta",
                 in_path=in_path,
@@ -526,7 +525,7 @@ class SparseEncoder:
                 world=world,
                 worker_kwargs={
                     "model_name": self.model_name,
-                    "batch_size": 4,
+                    "batch_size": 16,
                 },
             )
             return encoding_dir
