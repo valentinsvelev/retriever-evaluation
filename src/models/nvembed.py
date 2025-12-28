@@ -41,13 +41,13 @@ class NVEmbedEncoder:
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model = None
         self.tokenizer = None
-        #self.bnb_cfg = BitsAndBytesConfig(
+        # self.bnb_cfg = BitsAndBytesConfig(
         #    load_in_4bit=True,
         #    bnb_4bit_quant_type="nf4",
-        #    bnb_4bit_compute_dtype=torch.float16,
+        #    bnb_4bit_compute_dtype=torch.bfloat16,
         #    bnb_4bit_use_double_quant=True
-        #)
-        self.max_length = 32768
+        # )
+        self.max_length = 4096 #32768
         
         self._load_model()
     
@@ -76,21 +76,20 @@ class NVEmbedEncoder:
         # --- Step 2: Load model ---
         self.model = AutoModel.from_pretrained(
             self.model_name,
+            #load_in_4bit=True,
             #quantization_config=self.bnb_cfg,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
             #device_map="auto",
+            #attn_implementation="spda",
         )
 
         if hasattr(self.model.config, "use_cache"):
             self.model.config.use_cache = False
         
         # --- Step 3: Move to device and set to eval mode ---
-        # IMPORTANT: move to GPU first
         self.model.to(self.device)
         self.model.eval()
-
-        # If multi-GPU, DP-wrap the submodules (per model card workaround)
         self._wrap_submodules_dataparallel()
 
         print(f"NV-Embed model loaded successfully and moved to {self.device}.")
@@ -100,8 +99,8 @@ class NVEmbedEncoder:
         self,
         texts,
         is_query=False,
-        batch_size=16,                 # global/effective batch
-        micro_batch_size=4,            # GPU microbatch
+        batch_size=16,           # global batch
+        micro_batch_size=16,     # microbatch
         show_progress_bar=True,
     ):
         if self.model is None or self.tokenizer is None:
@@ -142,8 +141,8 @@ class NVEmbedEncoder:
                         embs = torch.from_numpy(embs)
 
                     if isinstance(embs, torch.Tensor):
-                        # normalize on GPU, then move to CPU (blocking copy)
-                        embs = F.normalize(embs, p=2, dim=1).detach().cpu()
+                        embs = embs.detach().cpu()
+                        embs = F.normalize(embs, p=2, dim=1)
 
                     micro_embs_cpu.append(embs)
 
@@ -213,7 +212,7 @@ class NVEmbedEncoder:
         
         docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
         
-        for d in docs_iter:        
+        for d in docs_iter:
             doc_texts = [doc.get("text", "") or "" for doc in d]
             batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]
             all_doc_ids.extend(batch_doc_ids)
@@ -231,7 +230,7 @@ class NVEmbedEncoder:
             # Save embeddings iteratively as json for MS MARCO
             out_dir = f"outputs/embeddings/{self.model_key}"
             os.makedirs(out_dir, exist_ok=True)
-            emb_path = os.path.join(out_dir, f"{corpus_label}.jsonl")
+            emb_path = os.path.join(out_dir, f"{corpus_label}.h5")
             
             if dataset_id == "irds:msmarco-passage/dev/small":
                 append_dense_embeddings_hdf5(batch_embeddings, batch_doc_ids, emb_path)

@@ -134,24 +134,8 @@ def run(
             model = SparseEncoder(model_name=model_name, model_key=model_key, device=device)
             index_input = corpus_dir
 
-            # Doc2Query expansion = offline doc "encoding" cost
-            if model_key == "doc2query":
-                t0 = time.time()
-                index_input = model.build_d2q_docs(
-                    docs_df=docs,
-                    out_dir=f"data/augmented/d2q/{dataset_label}-d2q-expanded",
-                    model_ckpt=model_name,
-                    queries_per_doc=3,
-                    max_input_len=512,
-                    max_query_len=64,
-                    batch_size=64,
-                    top_k=10,
-                    do_sample=True
-                )
-                timing["doc_encoding_seconds"] += time.time() - t0
-
             # Learned sparse encoders: doc encoding
-            if model_key in ["unicoil", "sparta", "deepct", "splade"]:  # all but BM25 and doc2query
+            if model_key in ["unicoil", "sparta", "deepct", "splade", "doc2query"]:  # all but BM25
                 enc_dir  = f"outputs/encodings/{model_key}/{corpus_label}"
                 enc_file = os.path.join(enc_dir, "corpus.jsonl")
 

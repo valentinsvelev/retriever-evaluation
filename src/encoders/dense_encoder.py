@@ -11,7 +11,7 @@ from transformers import (
     T5Tokenizer, T5ForConditionalGeneration,
     DPRContextEncoder, DPRContextEncoderTokenizer,
     DPRQuestionEncoder, DPRQuestionEncoderTokenizer,
-    AutoModelForCausalLM,
+    AutoModelForCausalLM, T5EncoderModel
 )
 from sentence_transformers import SentenceTransformer
 from FlagEmbedding import BGEM3FlagModel, FlagModel
@@ -197,23 +197,23 @@ class DenseEncoder:
             self.model = FlagModel(self.model_name, query_instruction_for_retrieval="Represent this sentence for searching relevant passages: ")
             return
 
-        if "instructor" in name:
-            self._handler_type = 'instructor'
-            print("Loading with: INSTRUCTOR Handler")
-            device_str = self.device.type
-            self.model = INSTRUCTOR(self.model_name)
+        # if "instructor" in name:
+        #     self._handler_type = 'instructor'
+        #     print("Loading with: INSTRUCTOR Handler")
+        #     device_str = self.device.type
+        #     self.model = INSTRUCTOR(self.model_name)
             
-            # multi-GPU: start pool if we have >1 GPU
-            self.pool = None
-            if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-                num_gpus = min(4, torch.cuda.device_count())
-                target_devices = [f"cuda:{i}" for i in range(num_gpus)]
-                print(f"Starting SentenceTransformer multi-process pool on {target_devices}")
-                self.pool = self.model.start_multi_process_pool(
-                    target_devices=target_devices
-                )
+        #     # multi-GPU: start pool if we have >1 GPU
+        #     self.pool = None
+        #     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        #         num_gpus = min(4, torch.cuda.device_count())
+        #         target_devices = [f"cuda:{i}" for i in range(num_gpus)]
+        #         print(f"Starting SentenceTransformer multi-process pool on {target_devices}")
+        #         self.pool = self.model.start_multi_process_pool(
+        #             target_devices=target_devices
+        #         )
             
-            return
+        #     return
 
         if "promptriever" in name or "repllama" in name:
             self._handler_type = 'peft_biencoder'
@@ -228,7 +228,7 @@ class DenseEncoder:
             self.model.model.config.use_cache = False
             return
 
-        if "sentence-transformers" in name or "gtr-" in name or "gemma" in name or "e5-mistral" in name or "kalm" in name:
+        if "sentence-transformers" in name or "gtr-" in name or "gemma" in name or "e5-mistral" in name or "kalm" in name or "instructor" in name:
             self._handler_type = 'sentence_transformer'
             print("Loading with: SentenceTransformer Handler")
             
@@ -241,7 +241,7 @@ class DenseEncoder:
                 }
                 print("Quantization applied")
             else:
-                model_kwargs={}
+                model_kwargs={"torch_dtype": torch.bfloat16}
 
             self.model = SentenceTransformer(
                 self.model_name,
@@ -249,6 +249,9 @@ class DenseEncoder:
                 #model_kwargs=model_kwargs
                 #device=self.device
             )
+
+            if "kalm" in name:
+                self.model.max_seq_length = 512
             
             # multi-GPU: start pool if we have >1 GPU
             self.pool = None
@@ -337,7 +340,7 @@ class DenseEncoder:
         peft_cfg = PeftConfig.from_pretrained(peft_id)
         base_id = peft_cfg.base_model_name_or_path
         
-        gpu_idx = (self.device.index if self.device.index is not None else 0)
+        #gpu_idx = (self.device.index if self.device.index is not None else 0)
         base = AutoModel.from_pretrained(
             base_id,
             trust_remote_code=True,
@@ -360,12 +363,12 @@ class DenseEncoder:
         model = PeftModel.from_pretrained(base, peft_id)
         model = model.merge_and_unload()
         
-        if "promptriever" in self.model_name:
-            model.config.max_length = 512
-            tokenizer.model_max_length = 512
-        elif "repllama" in self.model_name:
-            model.config.max_length = 2048
-            tokenizer.model_max_length = 2048
+        # if "promptriever" in self.model_name:
+        model.config.max_length = 512
+        tokenizer.model_max_length = 512
+        # elif "repllama" in self.model_name:
+        #     model.config.max_length = 2048
+        #     tokenizer.model_max_length = 2048
 
         self.model = model
         self.model.eval()
@@ -449,14 +452,14 @@ class DenseEncoder:
         """Encodes a list of texts into embeddings (except for TART-full, which is a reranker)."""
         
         if self._handler_type == "gritlm":
-            batch_size = 32
-        elif self._handler_type == "instructor":
-            batch_size = 64
+            batch_size = 8
+        # elif self._handler_type == "instructor":
+        #     batch_size = 64
         elif self._handler_type == "peft_biencoder":
             if "repllama" in self.model_name:
-                batch_size = 32
+                batch_size = 8
             else:
-                batch_size = 64
+                batch_size = 64 # Promptriever
         elif "gtr" in self.model_name:
             batch_size = 128
         elif "jina" in self.model_name:
@@ -464,12 +467,8 @@ class DenseEncoder:
         elif self._handler_type == "transformer":
             batch_size = 256
         elif self._handler_type == "sentence_transformer":
-            if "gemma" in self.model_name or "kalm" in self.model_name:
-                batch_size = 32
-            else:
-                batch_size = 64
+            batch_size = 32
 
-        #batch_size = 256
         print(f"Using a batch size of {batch_size}.")
         
         # FlagEmbedding (BGE)
@@ -487,12 +486,12 @@ class DenseEncoder:
             embeddings = self.model.encode(texts_to_encode, batch_size=batch_size, show_progress_bar=True, normalize_embeddings=True, pool=self.pool)
             return torch.from_numpy(embeddings)
 
-        # INSTRUCTOR
-        if self._handler_type == 'instructor':
-            instr = self.config.get('query_instruction') if is_query else self.config.get('doc_instruction')
-            pairs = [[instr, t] for t in texts]
-            embs = self.model.encode(pairs, batch_size=batch_size, show_progress_bar=True, normalize_embeddings=True, pool=self.pool)
-            return torch.from_numpy(np.asarray(embs))
+        # # INSTRUCTOR
+        # if self._handler_type == 'instructor':
+        #     instr = self.config.get('query_instruction') if is_query else self.config.get('doc_instruction')
+        #     pairs = [[instr, t] for t in texts]
+        #     embs = self.model.encode(pairs, batch_size=batch_size, show_progress_bar=True, normalize_embeddings=True)
+        #     return torch.from_numpy(np.asarray(embs))
 
         # GritLM
         if self._handler_type == 'gritlm':
@@ -598,7 +597,7 @@ class DenseEncoder:
                         return_tensors="pt",
                     )
                 else:
-                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=2048)
+                    inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=1024) # 2048/4096 for best results for RepLLaMA
             else:
                 inputs = tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512)
 

@@ -115,6 +115,8 @@ instruction_tuned_retrievers = {
         "model_path": "hkunlp/instructor-large",
         "query_instruction": "Represent the question: ",
         "doc_instruction": "Represent the document: ",
+        "pooling": "mean",
+        "normalize": True
     },
     # "promptriever": {
     #     "model_path": "samaya-ai/promptriever-llama3.1-8b-instruct-v1",

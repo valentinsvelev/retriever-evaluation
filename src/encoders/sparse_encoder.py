@@ -92,9 +92,10 @@ def _spawn_multi_gpu(
     out_dir = os.path.dirname(out_path)
     os.makedirs(out_dir, exist_ok=True)
 
-    # Clean stale parts
+    base = os.path.splitext(os.path.basename(out_path))[0]
+
     for r in range(world):
-        p = out_path + f".part{r}"
+        p = os.path.join(out_dir, f"{base}_shard{r:02d}.jsonl")
         if os.path.exists(p):
             os.remove(p)
 
@@ -108,16 +109,16 @@ def _spawn_multi_gpu(
 
     mp.spawn(_encode_worker_entry, args=(job,), nprocs=world, join=True)
 
-    # Validate parts exist and are non-empty
-    for r in range(world):
-        p = out_path + f".part{r}"
-        if not (os.path.exists(p) and os.path.getsize(p) > 0):
-            raise RuntimeError(f"Missing/empty part file: {p}")
+    # # Validate parts exist and are non-empty
+    # for r in range(world):
+    #     p = out_path + f".part{r}"
+    #     if not (os.path.exists(p) and os.path.getsize(p) > 0):
+    #         raise RuntimeError(f"Missing/empty part file: {p}")
 
-    _merge_parts(out_path, world)
+    # _merge_parts(out_path, world)
 
-    if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
-        raise RuntimeError(f"Encoding failed: missing/empty {out_path}")
+    # if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
+    #     raise RuntimeError(f"Encoding failed: missing/empty {out_path}")
 
 
 def _encode_worker_entry(rank: int, job: Dict[str, Any]) -> None:
@@ -141,7 +142,9 @@ def _encode_worker_entry(rank: int, job: Dict[str, Any]) -> None:
         else:
             device = "cpu"
 
-        part_path = out_path + f".part{rank}"
+        out_dir = os.path.dirname(out_path)
+        base = os.path.splitext(os.path.basename(out_path))[0]
+        part_path = os.path.join(out_dir, f"{base}_shard{rank:02d}.jsonl")
 
         if mode == "splade":
             _worker_splade(rank, world, device, in_path, part_path, kw)
@@ -260,6 +263,7 @@ def _worker_unicoil(rank: int, world: int, device: str, in_path: str, part_path:
     scale = int(kw.get("scale", 100))
     min_after = int(kw.get("min_after_scale", 1))
     topn = int(kw.get("topn", 500))
+    batch_size = int(kw.get("batch_size", 32))
 
     def normalize(enc_out):
         if isinstance(enc_out, dict):
@@ -287,15 +291,22 @@ def _worker_unicoil(rank: int, world: int, device: str, in_path: str, part_path:
             items.sort(key=lambda x: x[1], reverse=True)
             items = items[:topn]
         return {t: iw for t, iw in items}
+    
+    ids, texts = [], []
 
     with open(part_path, "w", encoding="utf-8") as fout:
         for docid, text in _iter_corpus_strided(in_path, rank, world):
-            enc = doc_encoder.encode(text)
-            enc = normalize(enc)
-            vec = prune_scale(enc)
-            if not vec:
-                continue
-            fout.write(json.dumps({"id": docid, "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
+            ids.append(docid)
+            texts.append(text)
+
+            if len(ids) >= batch_size:
+                batch_encodings = doc_encoder.encode(texts)
+                for did, enc in zip(ids, batch_encodings):
+                    enc = normalize(enc)
+                    vec = prune_scale(enc)
+                    if vec:
+                        fout.write(json.dumps({"id": did, "vector": vec, "contents": ""}, ensure_ascii=False) + "\n")
+                ids, texts = [], []
 
 
 def _worker_sparta(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
@@ -329,6 +340,7 @@ def _worker_deepct(rank: int, world: int, device: str, in_path: str, part_path: 
     max_seq_len = int(kw.get("max_seq_len", 512))
     scale = float(kw.get("scale", 100.0))
     max_tf = int(kw.get("max_tf", 20))
+    batch_size = int(kw.get("batch_size", 32))
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForTokenClassification.from_pretrained(model_name).to(device)
@@ -336,58 +348,103 @@ def _worker_deepct(rank: int, world: int, device: str, in_path: str, part_path: 
 
     special_tokens = set(tokenizer.all_special_tokens)
 
-    def rewrite_text(text: str) -> str:
-        text = text.strip()
-        if not text:
-            return ""
+    def rewrite_text(texts: List[str]) -> List[str]:
+        # Keep behavior consistent with your original per-text stripping/empty handling
+        stripped = [t.strip() for t in texts]
+        if not stripped:
+            return []
 
-        enc = tokenizer(text, truncation=True, max_length=max_seq_len, return_tensors="pt")
+        # Batch tokenize + pad
+        enc = tokenizer(
+            stripped,
+            truncation=True,
+            max_length=max_seq_len,
+            padding=True,
+            return_tensors="pt",
+        )
         enc = {k: v.to(device) for k, v in enc.items()}
 
         with torch.no_grad():
-            logits = model(**enc).logits.squeeze(-1).squeeze(0)  # [seq_len]
+            logits = model(**enc).logits  # [B, L, 1] or [B, L] or [B, L, C]
 
-        input_ids = enc["input_ids"].squeeze(0)
-        toks = tokenizer.convert_ids_to_tokens(input_ids)
+        input_ids = enc["input_ids"]  # [B, L]
+        attn_mask = enc.get("attention_mask", None)
 
-        words: List[str] = []
-        scores: List[float] = []
-        cur_word = None
-        cur_score = None
+        # Mirror your original `.squeeze(-1)` for the common single-label head case
+        if logits.dim() == 3 and logits.size(-1) == 1:
+            logits = logits.squeeze(-1)  # [B, L]
 
-        for tok, score in zip(toks, logits.tolist()):
-            if tok in special_tokens:
+        out: List[str] = []
+
+        for i, text_i in enumerate(stripped):
+            if not text_i:
+                out.append("")
                 continue
-            if tok.startswith("##"):
-                sub = tok[2:]
-                if cur_word is None:
-                    cur_word, cur_score = sub, score
-                else:
-                    cur_word += sub
+
+            ids_i = input_ids[i]  # [L]
+            toks = tokenizer.convert_ids_to_tokens(ids_i)
+
+            if attn_mask is not None:
+                valid_len = int(attn_mask[i].sum().item())
+                toks = toks[:valid_len]
+                scores_iter = logits[i][:valid_len].tolist()
             else:
-                if cur_word is not None:
-                    words.append(cur_word)
-                    scores.append(float(cur_score))
-                cur_word, cur_score = tok, score
+                scores_iter = logits[i].tolist()
 
-        if cur_word is not None:
-            words.append(cur_word)
-            scores.append(float(cur_score))
+            words: List[str] = []
+            scores: List[float] = []
+            cur_word = None
+            cur_score = None
 
-        rewritten_tokens: List[str] = []
-        for w, s in zip(words, scores):
-            prob = 1.0 / (1.0 + math.exp(-float(s))) # sigmoid
-            tf = int(round(scale * prob))
-            tf = min(tf, max_tf)
-            if tf > 0:
-                rewritten_tokens.extend([w] * tf)
+            for tok, score in zip(toks, scores_iter):
+                if tok in special_tokens:
+                    continue
+                if tok.startswith("##"):
+                    sub = tok[2:]
+                    if cur_word is None:
+                        cur_word, cur_score = sub, score
+                    else:
+                        cur_word += sub
+                else:
+                    if cur_word is not None:
+                        words.append(cur_word)
+                        scores.append(float(cur_score))
+                    cur_word, cur_score = tok, score
 
-        return " ".join(rewritten_tokens) if rewritten_tokens else text
+            if cur_word is not None:
+                words.append(cur_word)
+                scores.append(float(cur_score))
+
+            rewritten_tokens: List[str] = []
+            for w, s in zip(words, scores):
+                prob = 1.0 / (1.0 + math.exp(-float(s))) # sigmoid
+                tf = int(round(scale * prob))
+                tf = min(tf, max_tf)
+                if tf > 0:
+                    rewritten_tokens.extend([w] * tf)
+
+            out.append(" ".join(rewritten_tokens) if rewritten_tokens else text_i)
+
+        return out
+
 
     with open(part_path, "w", encoding="utf-8") as fout:
+        batch_ids, batch_texts = [], []
+
         for docid, text in _iter_corpus_strided(in_path, rank, world):
-            new_text = rewrite_text(text)
-            fout.write(json.dumps({"id": docid, "contents": new_text}, ensure_ascii=False) + "\n")
+            batch_ids.append(docid)
+            batch_texts.append(text)
+
+            if len(batch_ids) >= batch_size:
+                new_texts = rewrite_text(batch_texts)
+                for bid, new_text in zip(batch_ids, new_texts):
+                    fout.write(json.dumps({"id": bid, "contents": new_text}, ensure_ascii=False) + "\n")
+                batch_ids, batch_texts = [], []
+
+        if batch_ids:
+            new_texts = rewrite_text(batch_texts)
+            for bid, new_text in zip(batch_ids, new_texts):
+                fout.write(json.dumps({"id": bid, "contents": new_text}, ensure_ascii=False) + "\n")
 
 
 def _worker_doc2query(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
@@ -491,7 +548,6 @@ class SparseEncoder:
 
         total_lines = _count_lines(in_path)
 
-        # IMPORTANT: reuse only if the FINAL output exists
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             return encoding_dir
 
@@ -510,6 +566,7 @@ class SparseEncoder:
                 world=world,
                 worker_kwargs={
                     "model_name": self.model_name,
+                    "batch_size": 32,
                     "max_seq_len": 512,
                     "scale": 100.0,
                     "max_tf": 20,
@@ -538,6 +595,7 @@ class SparseEncoder:
                 world=world,
                 worker_kwargs={
                     "encoder_name": "castorini/unicoil-msmarco-passage",
+                    "batch_size": 32,
                     "scale": 100,
                     "min_after_scale": 1,
                     "topn": 500,
@@ -562,10 +620,10 @@ class SparseEncoder:
             return encoding_dir
 
         if "doc2query" in name:
-            # You MUST provide model_ckpt. Put it in your MODELS config or pass it in some other way.
-            # Example: MODELS["doc2query"]["ckpt"]
             from src.configs.models import sparse_models
             model_ckpt = sparse_models["doc2query"]["model_path"]
+
+            # model_ckpt = self.model_name
 
             _spawn_multi_gpu(
                 mode="doc2query",
@@ -585,7 +643,6 @@ class SparseEncoder:
             return encoding_dir
 
         # Fallback to your original pyserini.encode command path (single GPU/CPU)
-        # (kept as-is)
         cmd = [
             sys.executable, "-m", "pyserini.encode",
             "input",  "--corpus", corpus_dir, "--fields", "text",
