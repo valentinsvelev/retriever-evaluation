@@ -127,7 +127,7 @@ encoder = NVEmbedEncoder(model_key=model, config=MODELS[model], device=DEVICE)
 results_per_query = {model: {}}
 runs_cache = {} # {(dataset, "nvembed"): {"og": {...}, "changed": {...}}}
 
-for dataset in LARGE_DATASETS:
+for dataset in DATASETS:
     base_label = dataset.replace("/", "_").replace(":", "_")
     run_key = (dataset, model)
 

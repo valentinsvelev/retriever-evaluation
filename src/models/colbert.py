@@ -5,12 +5,12 @@ from ragatouille import RAGPretrainedModel
 
 
 class ColBERT:
-    def __init__(self, dataset_name, corpus, queries):
+    def __init__(self, corpus_label, corpus, queries):
         self.corpus = corpus
         self.queries = queries
         self.model = RAGPretrainedModel.from_pretrained(pretrained_model_name_or_path="colbert-ir/colbertv2.0", n_gpu=1)
-        self.index_name = f"{dataset_name}_colbertv2_index"
-        self.index_path = os.path.join("outputs/indexes", self.index_name)
+        self.index_name = f"{corpus_label}_colbertv2_index"
+        self.index_path = os.path.expanduser(os.path.join("~/.ragatouille/colbert/indexes", self.index_name))
 
     def index(self):
         if not os.path.exists(self.index_path):

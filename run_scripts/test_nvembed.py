@@ -127,81 +127,85 @@ encoder = NVEmbedEncoder(model_key=model, config=MODELS[model], device=DEVICE)
 results_per_query = {model: {}}
 runs_cache = {} # {(dataset, "nvembed"): {"og": {...}, "changed": {...}}}
 
-for dataset in ["irds:beir/arguana"]:
-    base_label = dataset.replace("/", "_").replace(":", "_")
-    run_key = (dataset, model)
+if __name__ == '__main__':
+    for dataset in ["irds:beir/arguana"]:
+        base_label = dataset.replace("/", "_").replace(":", "_")
+        run_key = (dataset, model)
 
-    for variant in get_dataset_variants(handler, dataset):
-        print(f"\n▶ Running {model} on {dataset}; variant: {variant}")
+        for variant in get_dataset_variants(handler, dataset):
+            print(f"\n▶ Running {model} on {dataset}; variant: {variant}")
 
-        out = encoder.run(model=model, handler=handler, ds=dataset, device=DEVICE, variant=variant, save_report=True, archive=False)
+            out = encoder.run(model=model, 
+                                handler=handler, ds=dataset, 
+                                device=DEVICE, 
+                                variant=variant, save_report=True, archive=False)
 
-        # Cache results for p-MRR
-        bucket = runs_cache.setdefault(run_key, {})
-        bucket[variant] = out
+            # Cache results for p-MRR
+            bucket = runs_cache.setdefault(run_key, {})
+            bucket[variant] = out
 
-        # When both versions exist: compute p-MRR & write combined report
-        if set(bucket.keys()) >= {"og", "changed"}:
+            # When both versions exist: compute p-MRR & write combined report
+            if set(bucket.keys()) >= {"og", "changed"}:
 
-            evaluator = Evaluator(dataset, skip_self_matches="auto")
+                evaluator = Evaluator(dataset, skip_self_matches="auto")
 
-            # Load qrels for each variant
-            qrels_og = handler.read(dataset, variant="og")[2]
-            qrels_ch = handler.read(dataset, variant="changed")[2]
-            qrels_og_df = pd.DataFrame(list(qrels_og))
-            qrels_ch_df = pd.DataFrame(list(qrels_ch))
+                # Load qrels for each variant
+                qrels_og = handler.read(dataset, variant="og")[2]
+                qrels_ch = handler.read(dataset, variant="changed")[2]
+                qrels_og_df = pd.DataFrame(list(qrels_og))
+                qrels_ch_df = pd.DataFrame(list(qrels_ch))
 
-            # Raw ranking outputs
-            run_og = bucket["og"]["results"]
-            run_ch = bucket["changed"]["results"]
+                # Raw ranking outputs
+                run_og = bucket["og"]["results"]
+                run_ch = bucket["changed"]["results"]
 
-            # Compute p-MRR
-            p_mrr_macro, p_mrr_perq = evaluator.p_mrr(
-                qrels_og_df, qrels_ch_df, run_og, run_ch, k=None
-            )
-            print(f"[{model} | {dataset}] p-MRR = {p_mrr_macro*100:.3f}")
+                # Compute p-MRR
+                p_mrr_macro, p_mrr_perq = evaluator.p_mrr(
+                    qrels_og_df, qrels_ch_df, run_og, run_ch, k=None
+                )
+                print(f"[{model} | {dataset}] p-MRR = {p_mrr_macro*100:.3f}")
 
-            # Standard metric (MAP or nDCG@5)
-            og_agg = bucket["og"]["metrics_agg"]
-            if "ndcg_cut_5" in og_agg:
-                std_name = "ndcg_cut_5"
-            elif "mean_avg_precision" in og_agg:
-                std_name = "mean_avg_precision"
-            else:
-                std_name = sorted(og_agg.keys())[0] if og_agg else "standard_metric"
+                # Standard metric (MAP or nDCG@5)
+                og_agg = bucket["og"]["metrics_agg"]
+                if "ndcg_cut_5" in og_agg:
+                    std_name = "ndcg_cut_5"
+                elif "mean_avg_precision" in og_agg:
+                    std_name = "mean_avg_precision"
+                else:
+                    std_name = sorted(og_agg.keys())[0] if og_agg else "standard_metric"
 
-            std_value = float(og_agg.get(std_name, float("nan")))
+                std_value = float(og_agg.get(std_name, float("nan")))
 
-            # Runtime info
-            elapsed_og = bucket["og"]["timing"]
-            elapsed_ch = bucket["changed"]["timing"]
+                # Runtime info
+                elapsed_og = bucket["og"]["timing"]
+                elapsed_ch = bucket["changed"]["timing"]
 
-            # Save combined report
-            out_dir = f"outputs/scores/{model}"
-            os.makedirs(out_dir, exist_ok=True)
-            combined_path = os.path.join(out_dir, f"{base_label}.json")
+                # Save combined report
+                out_dir = f"outputs/scores/{model}"
+                os.makedirs(out_dir, exist_ok=True)
+                combined_path = os.path.join(out_dir, f"{base_label}.json")
 
-            combined_report = {
-                "model_name": model,
-                "dataset_id": dataset,
-                "metrics": {
-                    std_name: std_value,
-                    "p_mrr": float(p_mrr_macro),
-                },
-                "summary_stats": {
-                    "og": bucket["og"]["summary_stats"],
-                    "changed": bucket["changed"]["summary_stats"],
-                },
-                "runtime": {
-                    "og": elapsed_og,
-                    "changed": elapsed_ch,
+                combined_report = {
+                    "model_name": model,
+                    "dataset_id": dataset,
+                    "metrics": {
+                        std_name: std_value,
+                        "p_mrr": float(p_mrr_macro),
+                    },
+                    "summary_stats": {
+                        "og": bucket["og"]["summary_stats"],
+                        "changed": bucket["changed"]["summary_stats"],
+                    },
+                    "runtime": {
+                        "og": elapsed_og,
+                        "changed": elapsed_ch,
+                    }
                 }
-            }
 
-            with open(combined_path, "w", encoding="utf-8") as f:
-                json.dump(combined_report, f, indent=2)
+                with open(combined_path, "w", encoding="utf-8") as f:
+                    json.dump(combined_report, f, indent=2)
 
-            print(f"💾 Saved combined report to {combined_path}")
+                print(f"💾 Saved combined report to {combined_path}")
 
 
 # In[ ]:

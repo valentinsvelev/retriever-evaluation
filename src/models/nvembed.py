@@ -167,7 +167,6 @@ class NVEmbedEncoder:
         """
         Run NV-Embed in the same style as run.py.
         """
-
         # ---------------------------
         # 0. Dataset / corpus mapping
         # ---------------------------
@@ -212,43 +211,54 @@ class NVEmbedEncoder:
         
         docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
         
-        for d in docs_iter:
-            doc_texts = [doc.get("text", "") or "" for doc in d]
-            batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]
-            all_doc_ids.extend(batch_doc_ids)
-            
-            # Compute document embeddings
-            t = time.time()
-            batch_embeddings = self.encode(
-                texts=doc_texts,
-                is_query=False,
-                batch_size=16,
-                show_progress_bar=True,
-            )
-            timing["doc_encoding_seconds"] += time.time() - t
-            
-            # Save embeddings iteratively as json for MS MARCO
-            out_dir = f"outputs/embeddings/{self.model_key}"
-            os.makedirs(out_dir, exist_ok=True)
-            emb_path = os.path.join(out_dir, f"{corpus_label}.h5")
-            
-            if dataset_id == "irds:msmarco-passage/dev/small":
-                append_dense_embeddings_hdf5(batch_embeddings, batch_doc_ids, emb_path)
-            
-            # Instantiate indexer
-            if indexer is None:
-                indexer = FaissIndexer(dimension=batch_embeddings.shape[1])
+        emb_path = f"outputs/embeddings/{self.model_key}/{corpus_label}.h5"
 
-            # Build index iteratively
+        if os.path.exists(emb_path):
+            print(f"Reusing corpus embeddings from {emb_path}")
+            embeddings, all_doc_ids = load_dense_embeddings_hdf5(emb_path)
+
+            indexer = FaissIndexer(dimension=embeddings.shape[1])
             t = time.time()
-            indexer.build(batch_embeddings)
+            indexer.build(embeddings)
             timing["index_build_seconds"] += time.time() - t
+        else:
+            for d in docs_iter:
+                doc_texts = [doc.get("text", "") or "" for doc in d]
+                batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]
+                all_doc_ids.extend(batch_doc_ids)
+                
+                # Compute document embeddings
+                t = time.time()
+                batch_embeddings = self.encode(
+                    texts=doc_texts,
+                    is_query=False,
+                    batch_size=16,
+                    show_progress_bar=True,
+                )
+                timing["doc_encoding_seconds"] += time.time() - t
+                
+                # Save embeddings iteratively as json for MS MARCO
+                out_dir = f"outputs/embeddings/{self.model_key}"
+                os.makedirs(out_dir, exist_ok=True)
+                emb_path = os.path.join(out_dir, f"{corpus_label}.h5")
+                
+                if dataset_id == "irds:msmarco-passage/dev/small":
+                    append_dense_embeddings_hdf5(batch_embeddings, batch_doc_ids, emb_path)
+                
+                # Instantiate indexer
+                if indexer is None:
+                    indexer = FaissIndexer(dimension=batch_embeddings.shape[1])
 
-            # Free memory
-            del d, doc_texts, batch_doc_ids, batch_embeddings
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                # Build index iteratively
+                t = time.time()
+                indexer.build(batch_embeddings)
+                timing["index_build_seconds"] += time.time() - t
+
+                # Free memory
+                del d, doc_texts, batch_doc_ids, batch_embeddings
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
         # Load queries
         _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)
@@ -442,7 +452,7 @@ class NVEmbedEncoder:
         if archive:
             artefacts = []
     
-            emb_path_for_arch = f"outputs/embeddings/{self.model_key}/{corpus_label}.npz"
+            emb_path_for_arch = f"outputs/embeddings/{self.model_key}/{corpus_label}.h5"
             if os.path.exists(emb_path_for_arch):
                 artefacts.append(emb_path_for_arch)
     

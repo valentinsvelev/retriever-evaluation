@@ -29,6 +29,17 @@ DATASET_MAPPING = {
 }
 
 
+def has_all_4_shards(enc_dir: str) -> bool:
+    shard_files = [
+        os.path.join(enc_dir, f"corpus_shard{i:02d}.jsonl")
+        for i in range(4)   # 00, 01, 02, 03
+    ]
+    return all(
+        os.path.exists(f) and os.path.getsize(f) > 0
+        for f in shard_files
+    )
+
+
 def run(
     model_key: str, 
     handler: DataHandler,
@@ -137,9 +148,10 @@ def run(
             # Learned sparse encoders: doc encoding
             if model_key in ["unicoil", "sparta", "deepct", "splade", "doc2query"]:  # all but BM25
                 enc_dir  = f"outputs/encodings/{model_key}/{corpus_label}"
-                enc_file = os.path.join(enc_dir, "corpus.jsonl")
+                #enc_file = os.path.join(enc_dir, "corpus.jsonl")
 
-                if os.path.exists(enc_file) and os.path.getsize(enc_file) > 0:
+                if has_all_4_shards(enc_dir):
+                #if os.path.exists(enc_file) and os.path.getsize(enc_file) > 0:
                     print(f"Reusing existing encodings at {enc_dir}")
                     index_input = enc_dir
                 else:
@@ -184,10 +196,10 @@ def run(
         elif model_key == "colbert":
             corpus_dict  = dict(zip(doc_ids, doc_texts))
             queries_dict = {qid: f"query: {txt}" for qid, txt in zip(query_ids, query_texts)}
-            colbert = ColBERT(dataset_name=dataset_label, corpus=corpus_dict, queries=queries_dict)
+            colbert = ColBERT(corpus_label=corpus_label, corpus=corpus_dict, queries=queries_dict)
 
             # Free up RAM
-            del doc_texts, doc_titles
+            del corpus_dict, doc_texts, doc_titles
             gc.collect()
 
             # ColBERT indexing (includes doc encoding + index build)
@@ -493,7 +505,7 @@ def run(
 
             ## ColBERT
             if model_key == "colbert":
-                colbert_index_dir = f"colbert/indexes/{dataset_label}"
+                colbert_index_dir = os.path.expanduser(f"~/.ragatouille/colbert/indexes/{corpus_label}_colbertv2_index")
                 if os.path.exists(colbert_index_dir): artefacts.append(colbert_index_dir)
 
             ## Results (common)

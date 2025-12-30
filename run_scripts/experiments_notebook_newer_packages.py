@@ -113,7 +113,7 @@ results_per_query = {}
 runs_cache = {} # {(dataset, model): {"og": {...}, "changed": {...}}}
 
 if __name__ == "__main__":
-    for model in ["instructor", "repllama", "gritlm"]:
+    for model in ["repllama", "gritlm", "tart"]:
         for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)
@@ -121,7 +121,7 @@ if __name__ == "__main__":
             for variant in get_dataset_variants(handler, dataset):
                 print(f"\n▶ Running {model} on {dataset}; variant: {variant}")
                 out = run(model, handler, dataset, DEVICE, variant=variant, save_report=True, archive=False)
-    
+
                 # cache everything we need later
                 bucket = runs_cache.setdefault(run_key, {})
                 bucket[variant] = out  # contains metrics_agg, metrics_perq, results, elapsed
