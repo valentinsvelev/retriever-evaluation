@@ -113,7 +113,7 @@ results_per_query = {}
 runs_cache = {} # {(dataset, model): {"og": {...}, "changed": {...}}}
 
 if __name__ == "__main__":
-    for model in ["repllama", "gritlm", "tart"]:
+    for model in ["repllama"]:
         for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)

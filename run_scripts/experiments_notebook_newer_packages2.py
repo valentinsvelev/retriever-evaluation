@@ -114,10 +114,10 @@ runs_cache = {} # {(dataset, model): {"og": {...}, "changed": {...}}}
 
 if __name__ == "__main__":
     for model in ["query2doc"]:
-        for dataset in ["irds:beir/nfcorpus/test"]:#["irds:beir/trec-covid", "irds:beir/webis-touche2020/v2"]:
+        for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)
-
+    
             for variant in get_dataset_variants(handler, dataset):
                 print(f"\n▶ Running {model} on {dataset}; variant: {variant}")
                 out = run(model, handler, dataset, DEVICE, variant=variant, save_report=True, archive=False)
@@ -125,11 +125,11 @@ if __name__ == "__main__":
                 # cache everything we need later
                 bucket = runs_cache.setdefault(run_key, {})
                 bucket[variant] = out  # contains metrics_agg, metrics_perq, results, elapsed
-
+    
                 # once both present, compute p-MRR and write the single report
                 if set(bucket.keys()) >= {"og", "changed"}:
                     evaluator = Evaluator(dataset, skip_self_matches="auto")
-
+    
                     # qrels for each variant
                     qrels_og = handler.read(dataset, variant="og")[2]
                     qrels_ch = handler.read(dataset, variant="changed")[2]
@@ -198,3 +198,4 @@ if __name__ == "__main__":
 # out = pathlib.Path.cwd() / "requirements_new.txt"
 # with open(out, "w") as f:
 #     subprocess.check_call([sys.executable, "-m", "pip", "freeze"], stdout=f)
+

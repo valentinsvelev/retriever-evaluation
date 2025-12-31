@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 from pyserini.search.lucene import LuceneSearcher, LuceneImpactSearcher
 
 from src.configs.models import MODELS
-from src.encoders.dense_encoder import DenseEncoder, generate_docs_for_query_expansion
+from src.encoders.dense_encoder import DenseEncoder, generate_docs_for_query_expansion, generate_pseudo_docs_for_query_expansion
 from src.encoders.sparse_encoder import SparseEncoder
 from src.indexing.faiss_indexer import FaissIndexer
 from src.indexing.lucene_indexer import LuceneIndexer
@@ -38,6 +38,10 @@ def has_all_4_shards(enc_dir: str) -> bool:
         os.path.exists(f) and os.path.getsize(f) > 0
         for f in shard_files
     )
+
+
+def make_q_plus(q, pseudo, repeat=5):
+    return ((" " + q.strip()) * repeat).strip() + " " + pseudo.strip()
 
 
 def run(
@@ -272,6 +276,52 @@ def run(
                 qid: {doc_ids[idx]: float(score) for idx, score in zip(indices[i], scores[i])}
                 for i, qid in enumerate(query_ids)
             }
+        
+        # ---------- Query2doc (BM25 as retriever) ----------
+        elif model_key == "query2doc":
+            q2d = generate_pseudo_docs_for_query_expansion(
+                query_ids,
+                query_texts,
+                model_name,
+                device,
+                f"data/augmented/{dataset_label}-q2d-augmented.json"
+            )
+
+            corpus_dir = f"data/corpora/{corpus_label}"
+
+            if os.path.exists(corpus_dir):
+                print(f"Reusing corpus directory {corpus_dir}")
+            else:
+                print(f"Building corpus directory {corpus_dir}")
+                prepare_pyserini_corpus(docs, corpus_dir, corpus_label)
+
+            model = SparseEncoder(model_name="bm25", model_key="bm25", device=device)
+            index_input = corpus_dir
+
+            index_dir = f"outputs/indexes/bm25/{corpus_label}"
+            indexer = LuceneIndexer(
+                model_name="bm25",
+                dataset_name=corpus_label,
+                index_dir=index_dir,
+            )
+
+            t0 = time.time()
+            indexer.build(corpus_dir=index_input)
+            timing["index_build_seconds"] += time.time() - t0
+
+            print(f"\n--- Searching with model {model_key} ---")
+            searcher = LuceneSearcher(indexer.index_dir)
+            searcher.set_bm25(k1=0.9, b=0.4)
+            
+            results = {}
+            search_start = time.time()
+            for qid, qtext in zip(query_ids, query_texts):
+                pseudo_doc = q2d[str(qid)]["pseudo_doc"]
+                q_plus = make_q_plus(qtext, pseudo_doc)
+
+                hits = searcher.search(q_plus, k=top_k)
+                results[qid] = {hit.docid: float(hit.score) for hit in hits}
+            timing["search_seconds"] += time.time() - search_start
 
         # ---------- TART (Contriever retriever + TART reranker) ----------
         elif model_key == "tart":
@@ -466,7 +516,7 @@ def run(
         # ---------------------------
         if model_key == "colbert":
             del colbert
-        elif model_key in ["bm25", "doc2query", "unicoil", "sparta", "deepct", "splade"]:
+        elif model_key in ["bm25", "doc2query", "unicoil", "sparta", "deepct", "splade", "query2doc"]:
             pass
         elif model_key == "tart":
             del tart_encoder

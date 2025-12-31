@@ -93,9 +93,7 @@ def generate_docs_for_query_expansion(query_ids: list, query_texts: list, model_
 
     all_outputs = []
 
-    # -------------------------------------------------------
     # Generation loop
-    # -------------------------------------------------------
     for i in tqdm(range(0, len(query_texts), batch_size), desc="Generating docs with Qwen2.5"):
         batch_queries = query_texts[i:i + batch_size]
 
@@ -136,14 +134,120 @@ def generate_docs_for_query_expansion(query_ids: list, query_texts: list, model_
         decoded = [d.strip() for d in decoded]
         all_outputs.extend(decoded)
 
-    # -------------------------------------------------------
     # Save & return
-    # -------------------------------------------------------
     with open(path, "w", encoding="utf-8") as f:
         json.dump(all_outputs, f)
 
     print(f"Hypothetical documents saved to '{path}'.")
     return all_outputs
+
+
+def generate_pseudo_docs_for_query_expansion(query_ids: list, query_texts: list, model_name: str, device: str, path: str, batch_size: int = 64):
+    """Generate documents for Query2doc and query2doc using Qwen2.5-7B-Instruct."""
+
+    # Load cached output if available
+    if os.path.exists(path):
+        print(f"Loading pre-generated documents from '{path}'.")
+        with open(path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        return cached
+
+    # Load Qwen2.5 model
+    print(f"Loading model for Query2doc generation: {model_name}")
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+
+    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.padding_side = "left"
+
+    # Build chat-style prompts
+    def build_messages(query: str):
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are a retrieval-focused assistant. "
+                    "Write a passage that answers the given query:.\n\n"
+                    "Requirements:\n"
+                    "- Do NOT mention that you are an assistant or that this is hypothetical.\n"
+                    "- Do NOT restate the query.\n"
+                    "- No bullet points or headings.\n"
+                    "- Write one coherent paragraph of 150–300 words."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Query: {query}\n\n"
+                    "Write a single, detailed passage that could answer this query. "
+                    "Return only the passage text."
+                ),
+            },
+        ]
+
+    #all_outputs = []
+    out_dict = {}
+
+    # Generation loop
+    for i in tqdm(range(0, len(query_texts), batch_size), desc="Generating docs with Qwen2.5"):
+        batch_qids = query_ids[i:i + batch_size]
+        batch_queries = query_texts[i:i + batch_size]
+
+        # Build chat templates
+        batch_texts = [
+            tokenizer.apply_chat_template(
+                build_messages(q),
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            for q in batch_queries
+        ]
+
+        inputs = tokenizer(
+            batch_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=768,
+        )#.to(device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=128,
+                do_sample=True,
+                temperature=1,
+                #top_p=0.95,
+                #repetition_penalty=1.1,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+        # Strip the prompt portion → keep only new generation
+        gen_tokens = outputs[:, inputs["input_ids"].shape[1]:]
+        decoded = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+        decoded = [d.strip() for d in decoded]
+        # all_outputs.extend(decoded)
+
+        for qid, q, pseudo in zip(batch_qids, batch_queries, decoded):
+            out_dict[str(qid)] = {"query": q, "pseudo_doc": pseudo}
+
+    # Save & return
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out_dict, f, ensure_ascii=False)
+
+    print(f"Hypothetical documents saved to '{path}'.")
+    return out_dict #all_outputs
 
 
 class DenseEncoder:

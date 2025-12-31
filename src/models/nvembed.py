@@ -47,7 +47,7 @@ class NVEmbedEncoder:
         #    bnb_4bit_compute_dtype=torch.bfloat16,
         #    bnb_4bit_use_double_quant=True
         # )
-        self.max_length = 4096 #32768
+        self.max_length = 4096 #512 #32768
         
         self._load_model()
     
@@ -95,6 +95,13 @@ class NVEmbedEncoder:
         print(f"NV-Embed model loaded successfully and moved to {self.device}.")
 
 
+    def _nv_instruction(self, instruction: str, is_query: bool) -> str:
+        if not is_query:
+            return ""
+        instr = instruction or "Given a question, retrieve passages that answer the question"
+        return f"Instruct: {instr}\nQuery: "
+
+
     def encode(
         self,
         texts,
@@ -115,6 +122,9 @@ class NVEmbedEncoder:
 
         instruction = self.config.get("query_instruction") if is_query else self.config.get("doc_instruction")
         instruction = instruction or ""
+
+        #base_instruction = self.config.get("query_instruction") if is_query else self.config.get("doc_instruction")
+        #instruction = self._nv_instruction(base_instruction, is_query=is_query)
 
         all_embeddings = []
         desc = "Encoding Queries" if is_query else "Encoding Documents"
@@ -185,7 +195,6 @@ class NVEmbedEncoder:
         scores_path = os.path.join(scores_dir, f"{dataset_label}.json")
         if os.path.exists(scores_path):
             print(f"Score found at {scores_path}. Skipping NV-Embed run...")
-            # If you want, you can load & return here; for now just skip.
             return None
 
         start_time = time.time()

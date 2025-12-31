@@ -13,19 +13,16 @@ class ColBERT:
         self.index_path = os.path.expanduser(os.path.join("~/.ragatouille/colbert/indexes", self.index_name))
 
     def index(self):
-        if not os.path.exists(self.index_path):
-            print(f"Index '{self.index_name}' not found. Building it now...")
-            self.model.index(
-                collection=list(self.corpus.values()),
-                document_ids=list(self.corpus.keys()),
-                index_name=self.index_name,
-                max_document_length=512,
-                split_documents=True,
-                use_faiss=True,
-                bsize=256
-            )
-        else:
-            print(f"Found existing index at '{self.index_path}'. Skipping indexing.")
+        print(f"Ensuring index '{self.index_name}' is ready...")
+        self.model.index(
+            collection=list(self.corpus.values()),
+            document_ids=list(self.corpus.keys()),
+            index_name=self.index_name,
+            max_document_length=512,
+            split_documents=True,
+            use_faiss=True,
+            bsize=256
+        )
 
     def search(self):
         results = {}
