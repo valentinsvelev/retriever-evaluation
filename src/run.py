@@ -18,7 +18,7 @@ from src.indexing.faiss_indexer import FaissIndexer
 from src.indexing.lucene_indexer import LuceneIndexer
 from src.evaluator import Evaluator
 from src.data_handler import DataHandler
-from src.models.colbert import ColBERT
+from src.models.colbert_ragatouille import ColBERT
 from src.misc import prepare_pyserini_corpus, save_dense_embeddings, load_dense_embeddings
 
 
@@ -32,7 +32,7 @@ DATASET_MAPPING = {
 def has_all_4_shards(enc_dir: str) -> bool:
     shard_files = [
         os.path.join(enc_dir, f"corpus_shard{i:02d}.jsonl")
-        for i in range(4)   # 00, 01, 02, 03
+        for i in range(4)  # 00, 01, 02, 03
     ]
     return all(
         os.path.exists(f) and os.path.getsize(f) > 0

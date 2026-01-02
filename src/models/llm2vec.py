@@ -17,7 +17,7 @@ from src.configs.models import MODELS
 from src.evaluator import Evaluator
 
 import shutil
-from src.misc import save_dense_embeddings, load_dense_embeddings, append_dense_embeddings_hdf5
+from src.misc import save_dense_embeddings, load_dense_embeddings_hdf5, append_dense_embeddings_hdf5, iter_dense_embeddings_hdf5, get_hdf5_embedding_dim
 
 
 DATASET_MAPPING = {
@@ -29,10 +29,7 @@ ARCHIVE_ROOT = "/dataHDD1/masterthesis"
 
 
 class LLM2VecEncoder:
-    """
-    Handles loading and encoding using the LLM2Vec library and methodology.
-    Loads a base model (potentially quantized) and optionally applies a PEFT adapter.
-    """
+
     def __init__(self, model_key: str, config: dict = None, device: str = "cuda:0"):
         """Initializes the LLM2VecEncoder."""
         self.model_key = model_key
@@ -40,12 +37,6 @@ class LLM2VecEncoder:
         self.config = config or {}
         self.device_str = device
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        #self.bnb_cfg = BitsAndBytesConfig(
-        #    load_in_4bit=True,
-        #    bnb_4bit_quant_type="nf4",
-        #    bnb_4bit_compute_dtype=torch.float16,
-        #    bnb_4bit_use_double_quant=True
-        #)
         self.llm2vec_wrapper = None
         self._load_model()
 
@@ -62,6 +53,8 @@ class LLM2VecEncoder:
             use_fast=True,
             code_revision=REV,
         )
+
+        print("DEBUG | tokenizer loaded")
     
         # 2) Config + base model on a single device
         model_config = AutoConfig.from_pretrained(
@@ -69,7 +62,9 @@ class LLM2VecEncoder:
             trust_remote_code=True,
             code_revision=REV,
         )
-    
+
+        print("DEBUG | config loaded")
+
         base_model = AutoModel.from_pretrained(
             self.model_name,
             config=model_config,
@@ -78,6 +73,8 @@ class LLM2VecEncoder:
             torch_dtype=torch.bfloat16,
         )
     
+        print("DEBUG | model loaded")
+
         # Move base model to a single primary device (e.g. cuda:0 or your DEVICE)
         primary_device = self.device if torch.cuda.is_available() else torch.device("cpu")
         base_model = base_model.to(primary_device)
@@ -87,6 +84,9 @@ class LLM2VecEncoder:
             base_model,
             "McGill-NLP/LLM2Vec-Meta-Llama-31-8B-Instruct-mntp-supervised",
         )
+
+        print("DEBUG | PEFT base model loaded")
+
         print("Merging PEFT adapter...")
         base_model = base_model.merge_and_unload()
         print("Adapter merged.")
@@ -201,21 +201,31 @@ class LLM2VecEncoder:
         # ---------------------------
         
         indexer = None # instantiate indexer outside of for loop
-        all_doc_ids = []
-        
-        docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
-        
         emb_path = f"outputs/embeddings/{self.model_key}/{corpus_label}.h5"
 
         if os.path.exists(emb_path):
-            print(f"Reusing corpus embeddings from {emb_path}")
-            embeddings, all_doc_ids = load_dense_embeddings_hdf5(emb_path)
+            # print(f"Reusing corpus embeddings from {emb_path}")
 
+            # dim = get_hdf5_embedding_dim(emb_path)
+            # indexer = FaissIndexer(dimension=dim)
+
+            # t = time.time()
+            # for emb_batch, id_batch in iter_dense_embeddings_hdf5(emb_path, batch_size=8192):
+            #     all_doc_ids.extend(id_batch)
+            #     indexer.build(emb_batch)
+            # timing["index_build_seconds"] += time.time() - t
+
+            print(f"Reusing corpus embeddings from {emb_path}") 
+            embeddings, all_doc_ids = load_dense_embeddings_hdf5(emb_path)
             indexer = FaissIndexer(dimension=embeddings.shape[1])
             t = time.time()
             indexer.build(embeddings)
             timing["index_build_seconds"] += time.time() - t
+
         else:
+            docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
+            all_doc_ids = []
+
             for d in docs_iter:        
                 doc_texts = [doc.get("text", "") or "" for doc in d]
                 batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]
@@ -272,10 +282,6 @@ class LLM2VecEncoder:
         t0 = time.time()
         scores, indices = indexer.search(query_embeddings, top_k=top_k)
         timing["search_seconds"] += time.time() - t0
-        
-        # print("index.ntotal:", indexer.index.ntotal)
-        # print("len(all_doc_ids):", len(all_doc_ids))
-        # print("max returned idx:", indices.max())
 
         del query_embeddings, indexer
         gc.collect()

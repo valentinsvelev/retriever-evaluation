@@ -47,7 +47,7 @@ class NVEmbedEncoder:
         #    bnb_4bit_compute_dtype=torch.bfloat16,
         #    bnb_4bit_use_double_quant=True
         # )
-        self.max_length = 4096 #512 #32768
+        self.max_length = 512 #32768
         
         self._load_model()
     
@@ -120,11 +120,8 @@ class NVEmbedEncoder:
             # we'll still handle the last uneven microbatch fine.
             pass
 
-        instruction = self.config.get("query_instruction") if is_query else self.config.get("doc_instruction")
-        instruction = instruction or ""
-
-        #base_instruction = self.config.get("query_instruction") if is_query else self.config.get("doc_instruction")
-        #instruction = self._nv_instruction(base_instruction, is_query=is_query)
+        base_instruction = self.config.get("query_instruction") if is_query else self.config.get("doc_instruction")
+        instruction = self._nv_instruction(base_instruction, is_query=is_query)
 
         all_embeddings = []
         desc = "Encoding Queries" if is_query else "Encoding Documents"

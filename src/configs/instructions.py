@@ -78,3 +78,7 @@ nvembed_instructions = {
     #         "text": "Given a news summary, retrieve other semantically similar summaries"
     #     }
 }
+
+gritlm_instructions = {}
+
+instructor_instructions = {}

@@ -114,6 +114,42 @@ def load_dense_embeddings(path: str):
     return emb, None
 
 
+def load_dense_embeddings_hdf5(path, as_tensor=False):
+    """
+    Load dense embeddings and document IDs from an HDF5 file.
+    """
+    with h5py.File(path, "r") as f:
+        embeddings = f["embeddings"][:]          # (N, D), float16
+        doc_ids = f["doc_ids"][:]
+
+    # Decode byte strings -> Python strings
+    doc_ids = [doc_id.decode("utf-8") for doc_id in doc_ids]
+
+    if as_tensor:
+        embeddings = torch.from_numpy(embeddings)
+
+    return embeddings, doc_ids
+
+
+def iter_dense_embeddings_hdf5(path, batch_size=8192, decode_doc_ids=True):
+    with h5py.File(path, "r") as f:
+        emb_ds = f["embeddings"]
+        id_ds  = f["doc_ids"]
+        n = emb_ds.shape[0]
+
+        for i in range(0, n, batch_size):
+            emb = emb_ds[i:i+batch_size]  # only this slice is loaded
+            ids = id_ds[i:i+batch_size]
+            if decode_doc_ids:
+                ids = [x.decode("utf-8") for x in ids]
+            yield emb, ids
+
+
+def get_hdf5_embedding_dim(path):
+    with h5py.File(path, "r") as f:
+        return f["embeddings"].shape[1]
+
+
 def append_dense_embeddings_jsonl(embeddings, doc_ids, path):
     if isinstance(embeddings, torch.Tensor):
         arr = embeddings.detach().cpu().numpy()
@@ -131,6 +167,7 @@ def append_dense_embeddings_jsonl(embeddings, doc_ids, path):
                 "embedding": emb.tolist()
             }
             f.write(json.dumps(rec) + "\n")
+
 
 def append_dense_embeddings_hdf5(embeddings, doc_ids, path):
     if isinstance(embeddings, torch.Tensor):
