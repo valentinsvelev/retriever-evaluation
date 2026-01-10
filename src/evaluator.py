@@ -34,8 +34,8 @@ class Evaluator:
             self.measure_objs = [nDCG@10]
             self.metric_name_map = {(nDCG@10): "ndcg_cut_10"}
         elif "jhu-clsp/robust04-instructions" in self.dataset_name or "jhu-clsp/core17-instructions" in self.dataset_name:
-            self.measure_objs = [MAP]
-            self.metric_name_map = {(MAP): "mean_avg_precision"}
+            self.measure_objs = [MAP@1000]
+            self.metric_name_map = {(MAP@1000): "mean_avg_precision_1000"}
         elif "jhu-clsp/news21-instructions" in self.dataset_name:
             self.measure_objs = [nDCG@5]
             self.metric_name_map = {(nDCG@5): "ndcg_cut_5"}
@@ -43,8 +43,6 @@ class Evaluator:
             self.measure_objs = [nDCG@10, R@100]
             self.metric_name_map = {(nDCG@10): "ndcg_cut_10", (R@100): "recall_100"}
 
-        #pretty = {v for v in self.metric_name_map.values()}
-        #print(f"Using ir_measures metrics: {pretty}")
 
     def _bootstrap_mean_stats(self, values, n_boot=100000, ci=0.95, random_state=42):
         """
@@ -82,6 +80,7 @@ class Evaluator:
             "ci95_low": low,
             "ci95_high": high,
         }
+
 
     @staticmethod
     def _base_qid(qid: str) -> str:

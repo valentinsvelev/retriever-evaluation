@@ -320,7 +320,7 @@ def _worker_sparta(rank: int, world: int, device: str, in_path: str, part_path: 
         for docid, text in _iter_corpus_strided(in_path, rank, world):
             buf.append({"_id": docid, "text": text})
             if len(buf) >= batch_size:
-                vecs = sparta.encode_corpus(buf, batch_size=batch_size)  # dict[id]->dict[token]->w
+                vecs = sparta.encode_corpus(buf, batch_size=batch_size)  # dict[id] -> dict[token] -> w
                 for did, vec in vecs.items():
                     if not vec:
                         continue

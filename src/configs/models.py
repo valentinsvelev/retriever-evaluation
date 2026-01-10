@@ -86,7 +86,7 @@ dense_models = {
         "model_path": "Qwen/Qwen2.5-7B-Instruct" # google/flan-t5-xxl
     },
     "query2doc": {
-        "model_path": "Qwen/Qwen2.5-7B-Instruct" # google/flan-t5-xxl
+        "model_path": "Qwen/Qwen2.5-7B-Instruct"
     },
     "simlm": {
         "model_path": "intfloat/simlm-base-msmarco-finetuned",
@@ -140,6 +140,8 @@ generalist_embedders = {
     # --------------------------------
     "bge": {
         "model_path": "BAAI/bge-large-en-v1.5",
+        #"query_instruction": "Represent this sentence for searching relevant passages: ",
+        #"doc_instruction": None,
         "normalize": True
     },
     "e5": {
@@ -154,6 +156,7 @@ generalist_embedders = {
         "pooling": "cls", # "last_token"
         "query_instruction": None, # "query: ",
         "doc_instruction": None, # "passage: "
+        "normalize": True
     },
     # "arctic": {
     #     "model_path": "Snowflake/snowflake-arctic-embed-l-v2.0",
@@ -172,7 +175,7 @@ generalist_embedders = {
     },
     "qwen": {
         "model_path": "Qwen/Qwen3-Embedding-0.6B",
-        "pooling": "last_token",
+        "pooling": "last_token_qwen",
         "query_instruction": "Instruct: Retrieve passages that answer this query\nQuery: ",
         "doc_instruction": None,
         "normalize": True
@@ -186,8 +189,6 @@ generalist_embedders = {
     "gemma": {
         "model_path": "google/embeddinggemma-300m",
         "pooling": "mean",
-        "query_instruction": "",
-        "doc_instruction": ""
     },
     "nvembed": {
         "model_path": "nvidia/NV-Embed-v2",
@@ -195,7 +196,9 @@ generalist_embedders = {
         "doc_instruction": None
     },
     "kalm": {
-        "model_path": "KaLM-Embedding/KaLM-embedding-multilingual-mini-instruct-v2.5"
+        "model_path": "KaLM-Embedding/KaLM-embedding-multilingual-mini-instruct-v2.5",
+        "query_instruction": "Instruct: Given a query, retrieve documents that answer the query \n Query: ",
+        "doc_instruction": "",
     },
     # "sfr": {
     #     "model_path": "Salesforce/SFR-Embedding-Mistral",
@@ -203,7 +206,24 @@ generalist_embedders = {
     #     "query_instruction": "Given a question, retrieve passages that answer the question",
     #     "doc_instruction": None,
     #     "normalize": True
-    # }
+    # },
+    # "qzhou": {
+    #     "model_path": "Kingsoft-LLM/QZhou-Embedding",
+    #     "pooling": "mean",
+    #     "query_instruction": "Instruct: Given a query, retrieve documents that answer the query \n Query: ",
+    #     "doc_instruction": "",
+    #     "normalize": True
+    # },
+    "granite": {
+        "model_path": "ibm-granite/granite-embedding-english-r2",
+        "pooling": "cls",
+        "query_instruction": None,
+        "doc_instruction": None,
+        "normalize": True
+    },
+    "drama": {
+        "model_path": "facebook/drama-1b"
+    },
 }
 
 MODELS = {**sparse_models, **dense_models, **instruction_tuned_retrievers, **generalist_embedders}

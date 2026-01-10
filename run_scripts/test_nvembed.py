@@ -128,7 +128,7 @@ results_per_query = {model: {}}
 runs_cache = {} # {(dataset, "nvembed"): {"og": {...}, "changed": {...}}}
 
 if __name__ == '__main__':
-    for dataset in ["irds:beir/arguana"]:
+    for dataset in DATASETS:
         base_label = dataset.replace("/", "_").replace(":", "_")
         run_key = (dataset, model)
 

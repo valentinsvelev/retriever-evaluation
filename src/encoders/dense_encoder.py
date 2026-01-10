@@ -403,17 +403,26 @@ class DenseEncoder:
                 print("Applying use_cache = False")
                 self.model.config.use_cache = False
         else:
-            self.model = AutoModel.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                device_map=None,
-                low_cpu_mem_usage=True,
-            )
-            self.model = self.model.to(self.device)
-            
-            if self.multi_gpu:
-                print("[DenseEncoder] Wrapping transformer model in DataParallel")
-                self.model = torch.nn.DataParallel(self.model)
+            if "jina" in self.model_name or "drama" in self.model_name.lower():
+                self.model = AutoModel.from_pretrained(
+                    self.model_name,
+                    trust_remote_code=True,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                )
+                self.model = self.model.to(self.device)
+            else:
+                self.model = AutoModel.from_pretrained(
+                    self.model_name,
+                    trust_remote_code=True,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                )
+                self.model = self.model.to(self.device)
+        
+                if self.multi_gpu:
+                    print("[DenseEncoder] Wrapping transformer model in DataParallel")
+                    self.model = torch.nn.DataParallel(self.model)
 
         if "repllama" in self.model_name.lower():
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -423,6 +432,9 @@ class DenseEncoder:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name, use_fast=True, trust_remote_code=True, clean_up_tokenization_spaces=True
             )
+
+            if "qwen" in self.model_name.lower():
+                self.tokenizer.padding_side = "left"
 
         if getattr(self.tokenizer, "pad_token", None) is None and getattr(self.tokenizer, "eos_token", None) is not None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -524,6 +536,14 @@ class DenseEncoder:
         if strategy == 'last_token':
             idxs = attention_mask.sum(dim=1).long() - 1
             return last_hidden[torch.arange(last_hidden.size(0)), idxs]
+        if strategy == "last_token_qwen":
+            left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+            if left_padding:
+                return last_hidden[:, -1]
+            else:
+                sequence_lengths = attention_mask.sum(dim=1) - 1
+                batch_size = last_hidden.shape[0]
+                return last_hidden[torch.arange(batch_size, device=last_hidden.device), sequence_lengths]
 
     def _apply_instruction(self, batch_texts, is_query: bool):
         instruction = self.config.get('query_instruction') if is_query else self.config.get('doc_instruction')
@@ -552,7 +572,7 @@ class DenseEncoder:
     # --------------------------------------------------
     # -------------------- ENCODING --------------------
     # --------------------------------------------------
-    def encode(self, texts, titles=None, is_query=False, batch_size=256):
+    def encode(self, texts, titles=None, is_query=False, batch_size=256, dataset_id=None):
         """Encodes a list of texts into embeddings (except for TART-full, which is a reranker)."""
         
         if self._handler_type == "gritlm":
@@ -578,17 +598,35 @@ class DenseEncoder:
         # FlagEmbedding (BGE)
         if self._handler_type == 'flag_embedding':
             params = {"batch_size": batch_size}
-            embs = self.model.encode(texts, **params)
+
+            texts_to_encode = texts
+            if not is_query and titles is not None and len(texts) == len(titles):
+                print("Concatenating titles and texts for document encoding.")
+                texts_to_encode = [f"{title} {text}" for title, text in zip(titles, texts)]
+
+            embs = self.model.encode(texts_to_encode, **params)
             return torch.from_numpy(embs)
 
         # Sentence-Transformers
         if self._handler_type == 'sentence_transformer':
             texts_to_encode = texts
-            if not is_query and titles is not None and len(texts) == len(titles):
-                print("Concatenating titles and texts for document encoding.")
-                texts_to_encode = [f"{title} {text}" for title, text in zip(titles, texts)]
-            embeddings = self.model.encode(texts_to_encode, batch_size=batch_size, show_progress_bar=True, normalize_embeddings=True, pool=self.pool)
-            return torch.from_numpy(embeddings)
+            
+            if "gemma" in self.model_name.lower():
+                if is_query:
+                    texts_to_encode = [f"task: search result | query: {text}" for text in texts_to_encode]
+                    embeddings = self.model.encode_query(texts_to_encode, show_progress_bar=True, pool=self.pool)
+                    return torch.from_numpy(embeddings)
+                else:
+                    texts_to_encode = [f"title: {title if title is not None else 'none'} | text: {text}" for title, text in zip(titles, texts)]
+                    embeddings = self.model.encode_document(texts_to_encode, show_progress_bar=True, pool=self.pool)
+                    return torch.from_numpy(embeddings)
+
+            else:
+                if not is_query and titles is not None and len(texts) == len(titles):
+                    print("Concatenating titles and texts for document encoding.")
+                    texts_to_encode = [f"{title} {text}" for title, text in zip(titles, texts)]
+                embeddings = self.model.encode(texts_to_encode, batch_size=batch_size, show_progress_bar=True, normalize_embeddings=True, pool=self.pool)
+                return torch.from_numpy(embeddings)
 
         # # INSTRUCTOR
         # if self._handler_type == 'instructor':
@@ -622,15 +660,18 @@ class DenseEncoder:
 
             return embs.detach().cpu()
         
-        # Jina v4
+        # Jina v3
         if "jina-embeddings-v3" in self.model_name:
             texts_to_encode = texts
             if not is_query and titles is not None and len(texts) == len(titles):
                 print("Concatenating titles and texts for document encoding.")
                 texts_to_encode = [f"{title} {text}" for title, text in zip(titles, texts)]
 
-            task = "retrieval.query" if is_query else "retrieval.passage"
-            embs = self.model.encode(texts_to_encode, task=task, show_progress_bar=True)
+            if dataset_id == "irds:beir/arguana":
+                embs = self.model.encode(texts_to_encode, show_progress_bar=True)
+            else:
+                task = "retrieval.query" if is_query else "retrieval.passage"
+                embs = self.model.encode(texts_to_encode, task=task, show_progress_bar=True)
             
             embs = torch.stack([torch.from_numpy(t).float().to("cpu") for t in embs], dim=0)
             #embs = torch.nn.functional.normalize(embs, p=2, dim=1)

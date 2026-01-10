@@ -51,6 +51,7 @@ class LLM2VecEncoder:
             self.model_name,
             trust_remote_code=True,
             use_fast=True,
+            #revision=REV,
             code_revision=REV,
         )
 
@@ -60,6 +61,7 @@ class LLM2VecEncoder:
         model_config = AutoConfig.from_pretrained(
             self.model_name,
             trust_remote_code=True,
+            #revision=REV,
             code_revision=REV,
         )
 
@@ -69,8 +71,13 @@ class LLM2VecEncoder:
             self.model_name,
             config=model_config,
             trust_remote_code=True,
+            #revision=REV,
             code_revision=REV,
             torch_dtype=torch.bfloat16,
+            #use_safetensors=True,
+            #force_download=True,
+            low_cpu_mem_usage=True,
+            #device_map="cuda",              # temporarily move to cuda; otherwise it will go into RAM...
         )
     
         print("DEBUG | model loaded")
@@ -217,6 +224,14 @@ class LLM2VecEncoder:
 
             print(f"Reusing corpus embeddings from {emb_path}") 
             embeddings, all_doc_ids = load_dense_embeddings_hdf5(emb_path)
+            
+            # Reconstruct IDs in the same order as when you originally saved
+            docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
+
+            all_doc_ids = []
+            for d in docs_iter:
+                all_doc_ids.extend([str(doc.get("doc_id", "") or "") for doc in d])
+            
             indexer = FaissIndexer(dimension=embeddings.shape[1])
             t = time.time()
             indexer.build(embeddings)

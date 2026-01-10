@@ -70,8 +70,8 @@ def main():
     results_per_query = {}
     runs_cache = {}
 
-    for model in ["colbert"]:
-        for dataset in ["irds:beir/nfcorpus/test"]: # ["irds:beir/cqadupstack/android", "irds:beir/cqadupstack/english", "irds:beir/cqadupstack/gaming", "irds:beir/cqadupstack/gis", "irds:beir/cqadupstack/mathematica", "irds:beir/cqadupstack/physics", "irds:beir/cqadupstack/programmers", "irds:beir/cqadupstack/stats", "irds:beir/cqadupstack/tex", "irds:beir/cqadupstack/unix", "irds:beir/cqadupstack/webmasters", "irds:beir/cqadupstack/wordpress"]:
+    for model in ["bm25"]:
+        for dataset in DATASETS: # ["irds:beir/cqadupstack/android", "irds:beir/cqadupstack/english", "irds:beir/cqadupstack/gaming", "irds:beir/cqadupstack/gis", "irds:beir/cqadupstack/mathematica", "irds:beir/cqadupstack/physics", "irds:beir/cqadupstack/programmers", "irds:beir/cqadupstack/stats", "irds:beir/cqadupstack/tex", "irds:beir/cqadupstack/unix", "irds:beir/cqadupstack/webmasters", "irds:beir/cqadupstack/wordpress"]:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)
 

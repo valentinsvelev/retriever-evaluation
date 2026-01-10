@@ -113,8 +113,8 @@ results_per_query = {}
 runs_cache = {} # {(dataset, model): {"og": {...}, "changed": {...}}}
 
 if __name__ == "__main__":
-    for model in ["query2doc"]:
-        for dataset in ["irds:beir/nfcorpus/test"]:#["irds:beir/trec-covid", "irds:beir/webis-touche2020/v2"]:
+    for model in ["granite"]:
+        for dataset in SMALL_DATASETS: #["irds:beir/trec-covid", "irds:beir/webis-touche2020/v2"]:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)
 
@@ -124,7 +124,7 @@ if __name__ == "__main__":
 
                 # cache everything we need later
                 bucket = runs_cache.setdefault(run_key, {})
-                bucket[variant] = out  # contains metrics_agg, metrics_perq, results, elapsed
+                bucket[variant] = out # contains metrics_agg, metrics_perq, results, elapsed
 
                 # once both present, compute p-MRR and write the single report
                 if set(bucket.keys()) >= {"og", "changed"}:

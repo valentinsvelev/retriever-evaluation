@@ -66,8 +66,8 @@ MODEL_NAMES_PRETTY = {
 
 DATASET_SIZES = {
     "irds:msmarco-passage/dev/small":               {"queries": 6980,  "docs": 8841823},
-    #"irds:msmarco-passage/trec-dl-2019/judged":    {"queries": 43,    "docs": 8841823},
-    #"irds:msmarco-passage/trec-dl-2020/judged":    {"queries": 54,    "docs": 8841823},
+    "irds:msmarco-passage/trec-dl-2019/judged":    {"queries": 43,    "docs": 8841823},
+    "irds:msmarco-passage/trec-dl-2020/judged":    {"queries": 54,    "docs": 8841823},
 
     # BEIR
     "irds:beir/trec-covid":                         {"queries": 50,    "docs": 171332},

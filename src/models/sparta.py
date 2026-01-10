@@ -3,25 +3,31 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 class SPARTA:
-    def __init__(self, model_path: str, device: str = 'cpu', top_k: int = 512):
+    def __init__(self, model_path: str, device: str = 'cpu', top_k: int = 512): # BEIR authors used topk=2000
         self.device = device
         self.top_k = top_k
         self.model = AutoModel.from_pretrained(model_path).to(self.device).eval()
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.bert_input_embeddings = self.model.embeddings.word_embeddings.weight
+        self.special_token_ids = torch.tensor(
+            list(self.tokenizer.all_special_ids),
+            device=self.device
+        )
 
     def _encode_batch(self, texts: list[str]) -> list[dict]:
         inputs = self.tokenizer(texts, padding=True, truncation=True, return_tensors="pt", max_length=512).to(self.device)
         with torch.no_grad():
             doc_embs = self.model(**inputs).last_hidden_state
-            scores = torch.einsum('bsh,vh->bvs', doc_embs, self.bert_input_embeddings)
+            scores = torch.einsum('bsh,vh->bvs', doc_embs, self.bert_input_embeddings) # equivalent to torch.matmul()
             max_scores = torch.max(scores, dim=-1).values
             transformed_scores = torch.log(torch.relu(max_scores) + 1)
+            
+            # Zero out special tokens
+            transformed_scores[:, self.special_token_ids] = 0.0
 
             # Prune the vocabulary to the top_k most important terms.
             top_k_scores, top_k_indices = torch.topk(transformed_scores, k=self.top_k, dim=-1)
 
-        # --- Convert the pruned batch to a list of dictionaries ---
         batch_dicts = []
         for i in range(top_k_scores.shape[0]):
             output_dict = {

@@ -3,6 +3,7 @@ import json
 import gzip
 import time
 import subprocess
+import random
 import pandas as pd
 import pyarrow.parquet as pq
 from tqdm import tqdm
@@ -11,12 +12,32 @@ from src.evaluator import Evaluator
 from src.configs.datasets import DATASETS
 from src.misc import get_dataset_variants
 from src.data_handler import DataHandler
+from src.analysis.mappings import DATASET_SIZES
 
-if not os.path.exists("ColBERT"):
-    subprocess.check_call(["git", "clone", "https://github.com/stanford-futuredata/ColBERT.git"])
+# os.environ["OMP_NUM_THREADS"] = "4"
+# os.environ["MKL_NUM_THREADS"] = "4"
+# os.environ["OPENBLAS_NUM_THREADS"] = "4"
+
+# import faiss
+# faiss.omp_set_num_threads(4)
+
+# os.environ["GLOO_SOCKET_IFNAME"] = "lo"
+# os.environ["NCCL_SOCKET_IFNAME"] = "lo"
+
+# if "MASTER_PORT" not in os.environ:
+#     os.environ["MASTER_PORT"] = str(random.randint(20000, 29000))
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+
+# if not os.path.exists("ColBERT"):
+#     subprocess.check_call(["git", "clone", "https://github.com/stanford-futuredata/ColBERT.git"])
 
 from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Indexer, Searcher
+
+import faiss, torch
+faiss.omp_set_num_threads(8)
+torch.set_num_threads(8)
 
 
 def parquet_to_tsv(docs_parquet: str, queries_parquet: str, qrels_parquet: str, out_dir: str):
@@ -172,6 +193,61 @@ def _load_qrels_parquet(qrels_parquet: str, qid_col: str = "qid", docno_col: str
     return pd.DataFrame(rows, columns=[qid_col, docno_col, rel_col])
 
 
+def _get_args(dataset_label: str, dataset_sizes=DATASET_SIZES, nbits: int = 2):
+    """
+    Returns (nbits, ncells, ndocs) matching ColBERTv2 Appendix F-style settings,
+    with a simple corpus-size heuristic that works across MS MARCO + BEIR + LoTTE.
+
+    Mapping:
+      - ncells ~= paper 'nprobe' (probe)
+      - ndocs  ~= paper 'ncandidate' (candidates kept for exact scoring)
+      - nbits  ~= residual bits per dim (b)
+    """
+    if dataset_label not in dataset_sizes:
+        if dataset_label.startswith("irds:beir/cqadupstack/"):
+            nbits_out = 2
+            ncells = 2
+            ndocs = ncells * (2**12)
+            return nbits_out, ncells, ndocs
+        else:
+            raise KeyError(f"Unknown dataset_label={dataset_label!r}. "
+                        f"Add it to DATASET_SIZES or pass a different mapping.")
+
+    num_docs = int(dataset_sizes[dataset_label]["docs"])
+
+    # Paper-faithful: b=2 bits/dim is the common evaluation choice.
+    # (You can override via the nbits parameter.)
+    nbits_out = int(nbits)
+
+    # Heuristic for probe (ncells):
+    # - Default probe=2
+    # - Use probe=4 for "large" corpora (Wikipedia/MSMARCO scale)
+    # We approximate that with a doc-count threshold.
+    if num_docs >= 5_000_000:
+        ncells = 4
+    else:
+        ncells = 2
+
+    # Heuristic for candidates (ndocs):
+    # Paper says: ncandidate = nprobe * 2^12 by default,
+    # with exceptions:
+    #   - Wikipedia uses nprobe * 2^13
+    #   - MS MARCO uses nprobe * 2^14
+    #
+    # We don't have "Wikipedia" explicitly in your mapping, so we do:
+    #   - If it's MS MARCO passage: use 2^14
+    #   - Else if it's huge (>=5M docs): use 2^13
+    #   - Else: use 2^12
+    if dataset_label.startswith("irds:msmarco-passage/"):
+        ndocs = ncells * (2**14)
+    elif num_docs >= 5_000_000:
+        ndocs = ncells * (2**13)
+    else:
+        ndocs = ncells * (2**12)
+
+    return nbits_out, ncells, ndocs
+
+
 def run_colbert(
     dataset_id: str,
     dataset_label: str,
@@ -228,49 +304,38 @@ def run_colbert(
     pid2docid = _load_pid2docid(pid2docid_tsv)
     queries = _load_queries_tsv(queries_tsv)
     timing["num_queries"] = len(queries)
+    
+    # ---------- make ColBERT config -------------
+    query_maxlen = 32
+    if "arguana" in dataset_label:
+        query_maxlen = 300
+    elif "climate-fever" in dataset_label:
+        query_maxlen = 64
+        
+    nbits, ncells, ndocs = _get_args(dataset_id)
+    
+    config = ColBERTConfig(
+        checkpoint=checkpoint,
+        index_root=index_root,
+        nbits=nbits,
+        query_maxlen=query_maxlen,
+        doc_maxlen=300,
+        kmeans_niters=4,
+        index_bsize=128,
+        ncells=ncells,
+        ndocs=ndocs,
+    )
 
     # ---------- 1) index ----------
     t0 = time.time()
     with Run().context(RunConfig(nranks=gpus, gpus=gpus)):
-
-        query_maxlen = 32
-        if "arguana" in dataset_label:
-            query_maxlen = 300
-        elif "climate-fever" in dataset_label:
-            query_maxlen = 64
-        
-        config = ColBERTConfig(
-            checkpoint=checkpoint,
-            index_root=index_root,
-            nbits=2,
-            query_maxlen=query_maxlen,
-            doc_maxlen=300,
-        )
         indexer = Indexer(checkpoint=checkpoint, config=config)
         indexer.index(name=index_name, collection=collection_tsv, overwrite=overwrite)
     timing["index_build_seconds"] += time.time() - t0
 
     # ---------- 2) search ----------
-    # Search on 1 GPU is usually plenty stable; keep it explicit.
     t0 = time.time()
     with Run().context(RunConfig(nranks=1, gpus=1)):
-        query_maxlen = 32
-        if "arguana" in dataset_label:
-            query_maxlen = 300
-        elif "climate-fever" in dataset_label:
-            query_maxlen = 64
-        
-        config = ColBERTConfig(
-            checkpoint=checkpoint,
-            index_root=index_root,
-            nbits=2,
-            query_maxlen=query_maxlen,
-            doc_maxlen=300,
-        )
-
-        #config.num_partitions = 262144
-        #config.kmeans_niters = 10
-
         searcher = Searcher(index=index_name, config=config)
 
         results = {}
@@ -368,7 +433,7 @@ if __name__ == "__main__":
     results_per_query = {}
     runs_cache = {}
 
-    for dataset in DATASETS:
+    for dataset in DATASETS:#, "irds:beir/webis-touche2020/v2"]:
         base_label = dataset.replace("/", "_").replace(":", "_")
         run_key = (dataset, model)
 

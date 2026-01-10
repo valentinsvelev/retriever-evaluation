@@ -17,7 +17,7 @@ from src.configs.models import MODELS
 from src.evaluator import Evaluator
 
 import shutil
-from src.misc import save_dense_embeddings, load_dense_embeddings, append_dense_embeddings_hdf5
+from src.misc import save_dense_embeddings, load_dense_embeddings_hdf5, append_dense_embeddings_hdf5
 
 
 DATASET_MAPPING = {
@@ -222,6 +222,13 @@ class NVEmbedEncoder:
         if os.path.exists(emb_path):
             print(f"Reusing corpus embeddings from {emb_path}")
             embeddings, all_doc_ids = load_dense_embeddings_hdf5(emb_path)
+
+            # Reconstruct IDs in the same order as when you originally saved
+            docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
+
+            all_doc_ids = []
+            for d in docs_iter:
+                all_doc_ids.extend([str(doc.get("doc_id", "") or "") for doc in d])
 
             indexer = FaissIndexer(dimension=embeddings.shape[1])
             t = time.time()

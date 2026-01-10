@@ -416,7 +416,7 @@ def run(
             else:
                 print(f"No cached corpus embeddings at {emb_path}, encoding corpus...")
                 t0 = time.time()
-                corpus_embeddings = encoder.encode(texts=doc_texts, titles=doc_titles, is_query=False)
+                corpus_embeddings = encoder.encode(texts=doc_texts, titles=doc_titles, is_query=False, dataset_id=dataset_id)
                 timing["doc_encoding_seconds"] += time.time() - t0
                 
                 # Save if Contriever or MS MARCO
@@ -429,7 +429,7 @@ def run(
 
             # Queries are dataset-specific
             t0 = time.time()
-            query_embeddings = encoder.encode(texts=query_texts, is_query=True)
+            query_embeddings = encoder.encode(texts=query_texts, is_query=True, dataset_id=dataset_id)
             timing["query_encoding_seconds"] += time.time() - t0
 
             indexer = FaissIndexer(dimension=corpus_embeddings.shape[1])
