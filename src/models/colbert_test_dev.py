@@ -14,23 +14,8 @@ from src.misc import get_dataset_variants
 from src.data_handler import DataHandler
 from src.analysis.mappings import DATASET_SIZES
 
-# os.environ["OMP_NUM_THREADS"] = "4"
-# os.environ["MKL_NUM_THREADS"] = "4"
-# os.environ["OPENBLAS_NUM_THREADS"] = "4"
-
-# import faiss
-# faiss.omp_set_num_threads(4)
-
-# os.environ["GLOO_SOCKET_IFNAME"] = "lo"
-# os.environ["NCCL_SOCKET_IFNAME"] = "lo"
-
-# if "MASTER_PORT" not in os.environ:
-#     os.environ["MASTER_PORT"] = str(random.randint(20000, 29000))
-
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-
-# if not os.path.exists("ColBERT"):
-#     subprocess.check_call(["git", "clone", "https://github.com/stanford-futuredata/ColBERT.git"])
+if not os.path.exists("ColBERT"):
+    subprocess.check_call(["git", "clone", "https://github.com/stanford-futuredata/ColBERT.git"])
 
 from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Indexer, Searcher
@@ -204,7 +189,7 @@ def _get_args(dataset_label: str, dataset_sizes=DATASET_SIZES, nbits: int = 2):
       - nbits  ~= residual bits per dim (b)
     """
     if dataset_label not in dataset_sizes:
-        if dataset_label.startswith("irds:beir/cqadupstack/"):
+        if dataset_label.startswith("irds:beir/cqadupstack/") or dataset_label.startswith("hf:jhu-clsp/"):
             nbits_out = 2
             ncells = 2
             ndocs = ncells * (2**12)

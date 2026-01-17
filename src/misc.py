@@ -172,6 +172,9 @@ def append_dense_embeddings_jsonl(embeddings, doc_ids, path):
 def append_dense_embeddings_hdf5(embeddings, doc_ids, path):
     if isinstance(embeddings, torch.Tensor):
         arr = embeddings.detach().cpu().numpy()
+    else:
+        arr = np.asarray(embeddings)
+
     arr = arr.astype("float16")
 
     with h5py.File(path, "a") as f:

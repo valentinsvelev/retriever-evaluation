@@ -1,7 +1,6 @@
 import torch
 from transformers import AutoModel, AutoTokenizer, AutoConfig#, BitsAndBytesConfig
 from peft import PeftModel
-from llm2vec import LLM2Vec
 import pandas as pd
 import numpy as np
 import time
@@ -10,6 +9,7 @@ import gzip
 import os
 import gc
 from tqdm import tqdm
+from gritlm import GritLM
 
 from src.indexing.faiss_indexer import FaissIndexer
 from src.data_handler import DataHandler
@@ -28,145 +28,34 @@ DATASET_MAPPING = {
 ARCHIVE_ROOT = "/dataHDD1/masterthesis"
 
 
-class LLM2VecEncoder:
+class GritLMEncoder:
 
     def __init__(self, model_key: str, config: dict = None, device: str = "cuda:0"):
-        """Initializes the LLM2VecEncoder."""
+        """Initializes the GritLM."""
         self.model_key = model_key
         self.model_name = MODELS[model_key]["model_path"]
         self.config = config or {}
         self.device_str = device
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.llm2vec_wrapper = None
         self._load_model()
 
     def _load_model(self):
-        """Loads tokenizer, base model, applies PEFT, no LLM2Vec wrapper."""
-        print(f"Loading LLM2Vec base model (no wrapper): {self.model_name}")
-    
-        REV = "9d1613c42e2f90050dc11daeb1a24919811fa2c5"
-    
-        # 1) Tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-            use_fast=True,
-            #revision=REV,
-            code_revision=REV,
-        )
+        """Loads wrapper."""
+        print(f"Loading GritLM with its wrapper...")
+        self.model = GritLM(self.model_name, device_map="auto", mode="embedding", torch_dtype=torch.float16)
+        self.model.model.config.use_cache = False
 
-        print("DEBUG | tokenizer loaded")
-    
-        # 2) Config + base model on a single device
-        model_config = AutoConfig.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-            #revision=REV,
-            code_revision=REV,
-        )
 
-        print("DEBUG | config loaded")
-
-        base_model = AutoModel.from_pretrained(
-            self.model_name,
-            config=model_config,
-            trust_remote_code=True,
-            #revision=REV,
-            code_revision=REV,
-            torch_dtype=torch.bfloat16,
-            #use_safetensors=True,
-            #force_download=True,
-            low_cpu_mem_usage=True,
-            #device_map="cuda",              # temporarily move to cuda; otherwise it will go into RAM...
-        )
-    
-        print("DEBUG | model loaded")
-
-        # Move base model to a single primary device (e.g. cuda:0 or your DEVICE)
-        primary_device = self.device if torch.cuda.is_available() else torch.device("cpu")
-        base_model = base_model.to(primary_device)
-    
-        # 3) Apply supervised LLM2Vec adapter and merge
-        base_model = PeftModel.from_pretrained(
-            base_model,
-            "McGill-NLP/LLM2Vec-Meta-Llama-31-8B-Instruct-mntp-supervised",
-        )
-
-        print("DEBUG | PEFT base model loaded")
-
-        print("Merging PEFT adapter...")
-        base_model = base_model.merge_and_unload()
-        print("Adapter merged.")
-    
-        base_model.eval()
-    
-        # 4) Use DataParallel to spread batches across all GPUs (if >1)
-        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-            print(f"Wrapping model in DataParallel over {torch.cuda.device_count()} GPUs")
-            self.model = torch.nn.DataParallel(base_model).cuda()
-            self.primary_device = torch.device("cuda")
+    def _gritlm_instruction(self, instruction: str, is_query: bool) -> str:
+        # Docs → no user turn, just the embedding tag
+        if not is_query:
+            return "<|embed|>\n"
+        # Queries → user turn + instruction + embed tag
+        if instruction:
+            return f"<|user|>\n{instruction}\n<|embed|>\n"
         else:
-            self.model = base_model
-            self.primary_device = primary_device
-
-
-    def _mean_pool(self, last_hidden_state, attention_mask):
-        mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
-        summed = (last_hidden_state * mask).sum(dim=1)
-        counts = mask.sum(dim=1).clamp(min=1e-9)
-        return summed / counts
-
-
-    def encode(self, texts, is_query=False, batch_size=32):
-        """Encodes a list of texts using the HF model directly (LLM2Vec weights)."""
-        instruction = self.config.get("query_instruction") if is_query else self.config.get("doc_instruction")
+            return "<|embed|>\n"
     
-        # Build payload: same logic as before (instructions vs plain text)
-        if is_query and instruction:
-            if "{}" in instruction:
-                payload = [instruction.format(t) for t in texts]
-            else:
-                payload = [[instruction, t] for t in texts]
-        else:
-            payload = texts
-    
-        all_embs = []
-        desc = "Encoding Queries" if is_query else "Encoding Documents"
-
-        #self.model.eval()
-        device = self.primary_device
-    
-        self.model.eval()
-        with torch.no_grad():
-            for i in tqdm(range(0, len(payload), batch_size), desc=desc):
-                batch_texts = payload[i : i + batch_size]
-    
-                # LLM2Vec supports either [text1, text2, ...] or [[instr, text], ...]
-                # We just pass batch_texts directly to the tokenizer.
-                encoded = self.tokenizer(
-                    batch_texts,
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                    return_tensors="pt",
-                )
-
-                if torch.cuda.is_available():
-                    first_device = next(self.model.parameters()).device
-                    encoded = {k: v.to(first_device) for k, v in encoded.items()}
-    
-                outputs = self.model(**encoded)
-                # outputs.last_hidden_state: [B, T, H]
-                batch_embs = self._mean_pool(outputs.last_hidden_state, encoded["attention_mask"])
-                all_embs.append(batch_embs.cpu())
-
-                del batch_embs
-
-        embeddings = torch.cat(all_embs, dim=0)
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-
-        return embeddings
-
     
     def run(self, model: str, handler: DataHandler, ds: str, device: str, top_k: int = 1001, variant: str | None = None, save_report: bool = False, archive: bool = True):
         # ---------------------------
@@ -200,7 +89,7 @@ class LLM2VecEncoder:
             "num_queries": 0,
         }
 
-        print(f"--- Running Benchmark (LLM2Vec) ---")
+        print(f"--- Running Benchmark (GritLM) ---")
         print(f"Model: {self.model_key} | Dataset: {dataset_label}")
 
         # ---------------------------
@@ -229,18 +118,16 @@ class LLM2VecEncoder:
             docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant, yield_batches=True)
             all_doc_ids = []
 
-            for d in docs_iter:        
-                doc_texts = [f"{doc.get('title', '')} {doc.get('text', '')}".strip() for doc in d] # doc_texts = [doc.get("text", "") or "" for doc in d]
+            for d in docs_iter:
+                doc_texts = [f"{doc.get('title', '')} {doc.get('text', '')}".strip() for doc in d]
                 batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]
                 all_doc_ids.extend(batch_doc_ids)
                 
                 # Compute document embeddings
                 t = time.time()
-                batch_embeddings = self.encode(
-                    texts=doc_texts,
-                    is_query=False,
-                    batch_size=16,
-                )
+                instr_cfg = self.config.get('doc_instruction')
+                grit_instr = self._gritlm_instruction(instr_cfg or "", is_query=False)
+                batch_embeddings = self.model.encode(doc_texts, instruction=grit_instr, batch_size=8)
                 timing["doc_encoding_seconds"] += time.time() - t
                 
                 # Save embeddings iteratively as json for MS MARCO
@@ -274,11 +161,9 @@ class LLM2VecEncoder:
 
         # Compute query embeddings
         t0 = time.time()
-        query_embeddings = self.encode(
-            texts=query_texts,
-            is_query=True,
-            batch_size=16,
-        )
+        instr_cfg = self.config.get('query_instruction')
+        grit_instr = self._gritlm_instruction(instr_cfg or "", is_query=True)
+        query_embeddings = self.model.encode(query_texts, instruction=grit_instr, batch_size=8)
         timing["query_encoding_seconds"] += time.time() - t0
         
         # Search index
@@ -302,7 +187,7 @@ class LLM2VecEncoder:
         with gzip.open(results_path, "wt", encoding="utf-8") as f:
             json.dump(results, f)
         print(f"Saved search results to {results_path}")
-        
+
         # ---------------------------
         # 6. Evaluate
         # ---------------------------

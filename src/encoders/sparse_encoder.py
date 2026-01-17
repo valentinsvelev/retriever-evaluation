@@ -109,17 +109,6 @@ def _spawn_multi_gpu(
 
     mp.spawn(_encode_worker_entry, args=(job,), nprocs=world, join=True)
 
-    # # Validate parts exist and are non-empty
-    # for r in range(world):
-    #     p = out_path + f".part{r}"
-    #     if not (os.path.exists(p) and os.path.getsize(p) > 0):
-    #         raise RuntimeError(f"Missing/empty part file: {p}")
-
-    # _merge_parts(out_path, world)
-
-    # if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
-    #     raise RuntimeError(f"Encoding failed: missing/empty {out_path}")
-
 
 def _encode_worker_entry(rank: int, job: Dict[str, Any]) -> None:
     """
@@ -311,7 +300,7 @@ def _worker_unicoil(rank: int, world: int, device: str, in_path: str, part_path:
 
 def _worker_sparta(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
     model_name = kw["model_name"]
-    batch_size = int(kw.get("batch_size", 4))
+    batch_size = int(kw.get("batch_size", 32))
 
     sparta = SPARTA(model_name, device=device)
 
@@ -337,7 +326,7 @@ def _worker_sparta(rank: int, world: int, device: str, in_path: str, part_path: 
 
 def _worker_deepct(rank: int, world: int, device: str, in_path: str, part_path: str, kw: Dict[str, Any]) -> None:
     model_name = kw["model_name"]
-    max_seq_len = int(kw.get("max_seq_len", 512))
+    max_seq_len = int(kw.get("max_seq_len", 512)) # DeepCT uses 128; BEIR uses 350
     scale = float(kw.get("scale", 100.0))
     max_tf = int(kw.get("max_tf", 20))
     batch_size = int(kw.get("batch_size", 32))
@@ -418,7 +407,7 @@ def _worker_deepct(rank: int, world: int, device: str, in_path: str, part_path: 
             rewritten_tokens: List[str] = []
             for w, s in zip(words, scores):
                 prob = 1.0 / (1.0 + math.exp(-float(s))) # sigmoid
-                tf = int(round(scale * prob))
+                tf = int(round(scale * prob)) # scale
                 tf = min(tf, max_tf)
                 if tf > 0:
                     rewritten_tokens.extend([w] * tf)
@@ -582,7 +571,7 @@ class SparseEncoder:
                 world=world,
                 worker_kwargs={
                     "model_name": self.model_name,
-                    "batch_size": 16,
+                    "batch_size": 32,
                 },
             )
             return encoding_dir

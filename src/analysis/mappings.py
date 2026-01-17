@@ -65,7 +65,7 @@ MODEL_NAMES_PRETTY = {
 }
 
 DATASET_SIZES = {
-    "irds:msmarco-passage/dev/small":               {"queries": 6980,  "docs": 8841823},
+    "irds:msmarco-passage/dev/small":              {"queries": 6980,  "docs": 8841823},
     "irds:msmarco-passage/trec-dl-2019/judged":    {"queries": 43,    "docs": 8841823},
     "irds:msmarco-passage/trec-dl-2020/judged":    {"queries": 54,    "docs": 8841823},
 
@@ -73,7 +73,7 @@ DATASET_SIZES = {
     "irds:beir/trec-covid":                         {"queries": 50,    "docs": 171332},
     "irds:beir/nfcorpus/test":                      {"queries": 323,   "docs": 3633},
     "irds:beir/nq":                                 {"queries": 3452,  "docs": 2681468},
-    "irds:beir/hotpotqa":                           {"queries": 7405,  "docs": 5233329},
+    "irds:beir/hotpotqa/test":                      {"queries": 7405,  "docs": 5233329},
     "irds:beir/fiqa/test":                          {"queries": 648,   "docs": 57638},
     "irds:beir/arguana":                            {"queries": 1406,  "docs": 8674},
     "irds:beir/webis-touche2020/v2":                {"queries": 49,    "docs": 382545},

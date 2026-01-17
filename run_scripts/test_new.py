@@ -113,8 +113,8 @@ results_per_query = {}
 runs_cache = {} # {(dataset, model): {"og": {...}, "changed": {...}}}
 
 if __name__ == "__main__":
-    for model in ["granite"]:
-        for dataset in SMALL_DATASETS: #["irds:beir/trec-covid", "irds:beir/webis-touche2020/v2"]:
+    for model in ["gritlm"]:
+        for dataset in DATASETS: #["irds:beir/trec-covid", "irds:beir/webis-touche2020/v2"]:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)
 

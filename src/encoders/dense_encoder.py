@@ -301,24 +301,6 @@ class DenseEncoder:
             self.model = FlagModel(self.model_name, query_instruction_for_retrieval="Represent this sentence for searching relevant passages: ")
             return
 
-        # if "instructor" in name:
-        #     self._handler_type = 'instructor'
-        #     print("Loading with: INSTRUCTOR Handler")
-        #     device_str = self.device.type
-        #     self.model = INSTRUCTOR(self.model_name)
-            
-        #     # multi-GPU: start pool if we have >1 GPU
-        #     self.pool = None
-        #     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        #         num_gpus = min(4, torch.cuda.device_count())
-        #         target_devices = [f"cuda:{i}" for i in range(num_gpus)]
-        #         print(f"Starting SentenceTransformer multi-process pool on {target_devices}")
-        #         self.pool = self.model.start_multi_process_pool(
-        #             target_devices=target_devices
-        #         )
-            
-        #     return
-
         if "promptriever" in name or "repllama" in name:
             self._handler_type = 'peft_biencoder'
             print("Loading with: PEFT Bi-Encoder Handler (Promptriever/RepLLaMA)")
@@ -350,8 +332,6 @@ class DenseEncoder:
             self.model = SentenceTransformer(
                 self.model_name,
                 trust_remote_code=True,
-                #model_kwargs=model_kwargs
-                #device=self.device
             )
 
             if "kalm" in name:
@@ -577,8 +557,6 @@ class DenseEncoder:
         
         if self._handler_type == "gritlm":
             batch_size = 8
-        # elif self._handler_type == "instructor":
-        #     batch_size = 64
         elif self._handler_type == "peft_biencoder":
             if "repllama" in self.model_name:
                 batch_size = 8
@@ -628,13 +606,6 @@ class DenseEncoder:
                 embeddings = self.model.encode(texts_to_encode, batch_size=batch_size, show_progress_bar=True, normalize_embeddings=True, pool=self.pool)
                 return torch.from_numpy(embeddings)
 
-        # # INSTRUCTOR
-        # if self._handler_type == 'instructor':
-        #     instr = self.config.get('query_instruction') if is_query else self.config.get('doc_instruction')
-        #     pairs = [[instr, t] for t in texts]
-        #     embs = self.model.encode(pairs, batch_size=batch_size, show_progress_bar=True, normalize_embeddings=True)
-        #     return torch.from_numpy(np.asarray(embs))
-
         # GritLM
         if self._handler_type == 'gritlm':
             # concat titles for docs (keeps your existing behavior)
@@ -674,7 +645,6 @@ class DenseEncoder:
                 embs = self.model.encode(texts_to_encode, task=task, show_progress_bar=True)
             
             embs = torch.stack([torch.from_numpy(t).float().to("cpu") for t in embs], dim=0)
-            #embs = torch.nn.functional.normalize(embs, p=2, dim=1)
 
             return embs
 

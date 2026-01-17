@@ -150,7 +150,7 @@ def run(
             index_input = corpus_dir
 
             # Learned sparse encoders: doc encoding
-            if model_key in ["unicoil", "sparta", "deepct", "splade", "doc2query"]:  # all but BM25
+            if model_key in ["unicoil", "sparta", "deepct", "splade", "doc2query"]: # all but BM25
                 enc_dir  = f"outputs/encodings/{model_key}/{corpus_label}"
                 #enc_file = os.path.join(enc_dir, "corpus.jsonl")
 
@@ -185,7 +185,13 @@ def run(
             if model_key in ["bm25", "doc2query", "deepct"]:
                 print(indexer.index_dir)
                 searcher = LuceneSearcher(indexer.index_dir)
-                searcher.set_bm25(k1=0.9, b=0.4)
+                
+                if model_key == "deepct":
+                    k1, b = 10, 0.9 # from README in Thakur's repository https://github.com/thakur-nandan/DeepCT
+                else:
+                    k1, b = 0.9, 0.4
+                
+                searcher.set_bm25(k1=k1, b=b)
             else:
                 searcher = LuceneImpactSearcher(indexer.index_dir, model.query_encoder)
 

@@ -211,7 +211,6 @@ class NVEmbedEncoder:
         # ---------------------------
         # 1. Load pre-saved dataset
         # ---------------------------
-        
         indexer = None # instantiate indexer outside of for loop
         all_doc_ids = []
         
@@ -236,7 +235,7 @@ class NVEmbedEncoder:
             timing["index_build_seconds"] += time.time() - t
         else:
             for d in docs_iter:
-                doc_texts = [doc.get("text", "") or "" for doc in d]
+                doc_texts = [f"{doc.get('title', '')} {doc.get('text', '')}".strip() for doc in d] # doc_texts = [doc.get("text", "") or "" for doc in d]
                 batch_doc_ids = [str(doc.get("doc_id", "") or "") for doc in d]
                 all_doc_ids.extend(batch_doc_ids)
                 
@@ -316,97 +315,6 @@ class NVEmbedEncoder:
         with gzip.open(results_path, "wt", encoding="utf-8") as f:
             json.dump(results, f)
         print(f"Saved search results to {results_path}")
-        
-        
-        
-        # _, queries_iter, qrels_iter = handler.read(dataset_id, variant=variant)
-
-        # query_ids, query_texts = [], []
-        # for row in queries_iter:
-        #     query_ids.append(str(row["query_id"]))
-        #     query_texts.append(row["text"])
-
-        # qrels = pd.DataFrame(list(qrels_iter))
-
-        # docs_iter, _, _ = handler.read(corpus_id, variant=corpus_variant)
-
-        # doc_ids, doc_texts = [], []
-        # for row in docs_iter:
-        #     doc_ids.append(str(row["doc_id"]))
-        #     doc_texts.append(row["text"])
-
-        # timing["num_queries"] = len(query_ids)
-
-        # del docs_iter, queries_iter
-        # gc.collect()
-
-        # # ---------------------------
-        # # 2. Encode / cache corpus
-        # # ---------------------------
-        # out_dir = f"outputs/embeddings/{self.model_key}"
-        # os.makedirs(out_dir, exist_ok=True)
-        # emb_path = os.path.join(out_dir, f"{corpus_label}.npz")
-
-        # if os.path.exists(emb_path):
-        #     print(f"Loading cached corpus embeddings from {emb_path}")
-        #     corpus_embeddings = load_dense_embeddings(emb_path)
-        # else:
-        #     print(f"No cached corpus embeddings at {emb_path}, encoding corpus with NV-Embed...")
-        #     t0 = time.time()
-        #     corpus_embeddings = self.encode(
-        #         texts=doc_texts,
-        #         is_query=False,
-        #         batch_size=16,
-        #         show_progress_bar=True,
-        #     )
-        #     timing["doc_encoding_seconds"] += time.time() - t0
-            
-        #     # Save if MS MARCO
-        #     if dataset_id == "irds:msmarco-passage/dev/small":
-        #         save_dense_embeddings(corpus_embeddings, emb_path)
-
-        # # Free up RAM
-        # del doc_texts, doc_titles
-        # gc.collect()
-
-        # # ---------------------------
-        # # 3. Encode queries
-        # # ---------------------------
-        # t0 = time.time()
-        # query_embeddings = self.encode(
-        #     texts=query_texts,
-        #     is_query=True,
-        #     batch_size=16,
-        #     show_progress_bar=True,
-        # )
-        # timing["query_encoding_seconds"] += time.time() - t0
-
-        # # ---------------------------
-        # # 4. FAISS index + search
-        # # ---------------------------
-        # indexer = FaissIndexer(dimension=corpus_embeddings.shape[1])
-        # t0 = time.time()
-        # indexer.build(corpus_embeddings)
-        # timing["index_build_seconds"] += time.time() - t0
-
-        # t0 = time.time()
-        # scores, indices = indexer.search(query_embeddings, top_k=top_k)
-        # timing["search_seconds"] += time.time() - t0
-
-        # results = {
-        #     qid: {doc_ids[idx]: float(score) for idx, score in zip(indices[i], scores[i])}
-        #     for i, qid in enumerate(query_ids)
-        # }
-
-        # # ---------------------------
-        # # 5. Save results (like run.py)
-        # # ---------------------------
-        # results_dir = f"outputs/results/{self.model_key}"
-        # os.makedirs(results_dir, exist_ok=True)
-        # results_path = os.path.join(results_dir, f"{dataset_label}.json")
-        # with gzip.open(results_path, "wt", encoding="utf-8") as f:
-        #     json.dump(results, f)
-        # print(f"Saved search results to {results_path}")
 
         # ---------------------------
         # 6. Evaluate
