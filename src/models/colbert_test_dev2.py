@@ -25,13 +25,6 @@ faiss.omp_set_num_threads(8)
 torch.set_num_threads(8)
 
 
-DATASET_MAPPING = {
-    "irds:msmarco-passage/dev/small": "irds:msmarco-passage/dev/small",
-    "irds:msmarco-passage/trec-dl-2019/judged": "irds:msmarco-passage/dev/small",
-    "irds:msmarco-passage/trec-dl-2020/judged": "irds:msmarco-passage/dev/small",
-}
-
-
 def parquet_to_tsv(docs_parquet: str, queries_parquet: str, qrels_parquet: str, out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
 
@@ -425,7 +418,7 @@ if __name__ == "__main__":
     results_per_query = {}
     runs_cache = {}
 
-    for dataset in ["irds:lotte/pooled/test/search"]:#, "irds:beir/webis-touche2020/v2"]: ["irds:lotte/pooled/test/search", "irds:lotte/pooled/test/forum"]
+    for dataset in ["irds:lotte/pooled/test/forum"]:#, "irds:beir/webis-touche2020/v2"]: ["irds:lotte/pooled/test/search", "irds:lotte/pooled/test/forum"]
         base_label = dataset.replace("/", "_").replace(":", "_")
         run_key = (dataset, model)
 

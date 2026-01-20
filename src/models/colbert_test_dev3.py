@@ -243,15 +243,20 @@ def _get_args(dataset_label: str, dataset_sizes=DATASET_SIZES, nbits: int = 2):
 def run_colbert(
     dataset_id: str,
     dataset_label: str,
-    dataset_dir: str,
+    #dataset_dir: str,
     qrels_parquet: str,
     index_root: str,
     index_name: str,
+
+    corpus_dir: str,
+    eval_dir: str,
+    corpus_dataset_id: str,
+
     checkpoint: str = "colbert-ir/colbertv2.0",
     gpus: int = 1,
     top_k: int = 1001,
     overwrite: str | bool = "reuse",   # "reuse" / "resume" / True
-    save_report: bool = True,
+    save_report: bool = True
 ) -> dict:
     """
     Mirrors run.py behavior:
@@ -279,9 +284,9 @@ def run_colbert(
     os.makedirs("outputs/results/colbert", exist_ok=True)
     os.makedirs("outputs/scores/colbert", exist_ok=True)
 
-    collection_tsv = os.path.join(dataset_dir, "collection.tsv")
-    queries_tsv = os.path.join(dataset_dir, "queries.tsv")
-    pid2docid_tsv = os.path.join(dataset_dir, "pid2docid.tsv")
+    collection_tsv = os.path.join(corpus_dir, "collection.tsv")
+    pid2docid_tsv  = os.path.join(corpus_dir, "pid2docid.tsv")
+    queries_tsv    = os.path.join(eval_dir, "queries.tsv")
 
     assert os.path.exists(collection_tsv), f"Missing {collection_tsv}"
     assert os.path.exists(queries_tsv), f"Missing {queries_tsv}"
@@ -304,7 +309,7 @@ def run_colbert(
     elif "climate-fever" in dataset_label:
         query_maxlen = 64
         
-    nbits, ncells, ndocs = _get_args(dataset_id)
+    nbits, ncells, ndocs = _get_args(corpus_dataset_id)
     
     config = ColBERTConfig(
         checkpoint=checkpoint,
@@ -319,11 +324,15 @@ def run_colbert(
     )
 
     # ---------- 1) index ----------
-    t0 = time.time()
-    with Run().context(RunConfig(nranks=gpus, gpus=gpus)):
-        indexer = Indexer(checkpoint=checkpoint, config=config)
-        indexer.index(name=index_name, collection=collection_tsv, overwrite=overwrite)
-    timing["index_build_seconds"] += time.time() - t0
+    index_path = os.path.join(index_root, index_name)
+    if not os.path.exists(index_path):
+        t0 = time.time()
+        with Run().context(RunConfig(nranks=gpus, gpus=gpus)):
+            indexer = Indexer(checkpoint=checkpoint, config=config)
+            indexer.index(name=index_name, collection=collection_tsv, overwrite="reuse")
+        timing["index_build_seconds"] += time.time() - t0
+    else:
+        print(f"[ColBERT] Reusing existing index at {index_path}; skipping indexing.")
 
     # ---------- 2) search ----------
     t0 = time.time()
@@ -410,6 +419,23 @@ def acquire_lock(lock_path: str, wait_s: int = 0):
             raise RuntimeError(f"Lock exists: {lock_path} (another process is writing TSVs)")
 
 
+def parquet_queries_to_tsv(queries_parquet: str, out_path: str):
+    def clean_text(x) -> str:
+        if x is None:
+            return ""
+        return " ".join(str(x).split()).strip()
+
+    pf_q = pq.ParquetFile(queries_parquet)
+    tmp = out_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as out:
+        for batch in pf_q.iter_batches(batch_size=100_000, columns=["query_id", "text"]):
+            qids = batch["query_id"].to_pylist()
+            qtexts = batch["text"].to_pylist()
+            for qid, qt in zip(qids, qtexts):
+                out.write(f"{str(qid)}\t{clean_text(qt)}\n")
+    os.replace(tmp, out_path)
+
+
 ##########################################################################
 # Main loop
 ##########################################################################
@@ -425,7 +451,15 @@ if __name__ == "__main__":
     results_per_query = {}
     runs_cache = {}
 
-    for dataset in ["irds:lotte/pooled/test/search"]:#, "irds:beir/webis-touche2020/v2"]: ["irds:lotte/pooled/test/search", "irds:lotte/pooled/test/forum"]
+    for dataset in [
+        "irds:msmarco-passage/dev/small",
+        "irds:msmarco-passage/trec-dl-2019/judged",
+        "irds:msmarco-passage/trec-dl-2020/judged",
+        "hf:kaist-ai/InstructIR",
+        "hf:jhu-clsp/robust04-instructions",
+        "hf:jhu-clsp/core17-instructions",
+        "hf:jhu-clsp/news21-instructions"
+    ]:
         base_label = dataset.replace("/", "_").replace(":", "_")
         run_key = (dataset, model)
 
@@ -434,44 +468,61 @@ if __name__ == "__main__":
 
             # Define paths including jhu-clsp variants handling
             suffix = f"_{variant}" if variant is not None else ""
-            raw_dir = f"data/raw/{base_label}{suffix}"
-            dataset_dir = f"data/colbert/{base_label}{suffix}"
 
-            dataset_label = f"{base_label}{suffix}"
-            index_root = "outputs/indexes/colbert"
-            index_name = dataset_label
+            # ---- eval paths (this dataset, this variant) ----
+            eval_label = f"{base_label}{suffix}"
+            raw_dir = f"data/raw/{eval_label}"
+            eval_dir = f"data/colbert/{eval_label}"
             qrels_parquet = f"{raw_dir}/qrels.parquet"
 
-            # Turn parquet files into TSV files
-            if not os.path.exists(dataset_dir):
-                lock_path = os.path.join(dataset_dir, ".build_tsv.lock")
-                os.makedirs(dataset_dir, exist_ok=True)
+            # ---- corpus paths (mapped dataset, SAME variant suffix) ----
+            corpus_dataset = DATASET_MAPPING.get(dataset, dataset)
+            corpus_base = corpus_dataset.replace("/", "_").replace(":", "_")
+            corpus_label = f"{corpus_base}{suffix}"
+            corpus_raw_dir = f"data/raw/{corpus_label}"
+            corpus_dir = f"data/colbert/{corpus_label}"
+
+            index_root = "experiments/default/indexes"
+            index_name = corpus_label   # shared across trec-dl & dev/small for the same suffix
+
+            # 1) Build corpus TSVs ONCE (docs + pid mapping + (queries/qrels written too, harmless))
+            if not os.path.exists(os.path.join(corpus_dir, "collection.tsv")):
+                lock_path = os.path.join(corpus_dir, ".build_tsv.lock")
+                os.makedirs(corpus_dir, exist_ok=True)
 
                 acquire_lock(lock_path)
                 try:
                     parquet_to_tsv(
-                        docs_parquet=f"data/raw/{base_label}/docs.parquet",
-                        queries_parquet=f"data/raw/{base_label}/queries.parquet",
-                        qrels_parquet=f"data/raw/{base_label}/qrels.parquet",
-                        out_dir=dataset_dir,
+                        docs_parquet=f"{corpus_raw_dir}/docs.parquet",
+                        queries_parquet=f"{corpus_raw_dir}/queries.parquet",
+                        qrels_parquet=f"{corpus_raw_dir}/qrels.parquet",
+                        out_dir=corpus_dir,
                     )
                 finally:
                     os.remove(lock_path)
 
-            # Run ColBERT
-            index_root = "outputs/indexes/colbert"
-            index_name = dataset_label
+            # 2) Build eval queries.tsv (per dataset+variant), WITHOUT touching corpus TSVs
+            os.makedirs(eval_dir, exist_ok=True)
+            eval_queries_tsv = os.path.join(eval_dir, "queries.tsv")
+            if not os.path.exists(eval_queries_tsv):
+                parquet_queries_to_tsv(
+                    queries_parquet=f"{raw_dir}/queries.parquet",
+                    out_path=eval_queries_tsv,
+                )
 
+            # 3) Run ColBERT using corpus index + corpus collection, but eval queries/qrels
             out = run_colbert(
                 dataset_id=dataset,
-                dataset_label=dataset_label,
-                dataset_dir=dataset_dir,
+                corpus_dataset_id=corpus_dataset,
+                dataset_label=eval_label,
+                corpus_dir=corpus_dir,
+                eval_dir=eval_dir,
                 qrels_parquet=qrels_parquet,
                 index_root=index_root,
                 index_name=index_name,
                 gpus=1,
                 top_k=1001,
-                overwrite=True,
+                overwrite="reuse",
                 save_report=True,
             )
 
