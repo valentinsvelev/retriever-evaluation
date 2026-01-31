@@ -1,9 +1,20 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import numpy as np
 import faiss
 
 
 class FaissIndexer:
-    """Handles FAISS indexing and searching."""
+    """
+    Handles FAISS indexing and searching.
+    """
     def __init__(self, dimension):
         self.index = faiss.IndexFlatIP(dimension)
 
@@ -19,7 +30,8 @@ class FaissIndexer:
 
         # Now it should be a numpy array
         x = np.asarray(x, dtype=np.float32)
-        # FAISS expects contiguous float32
+        
+        # FAISS expects float32
         return np.ascontiguousarray(x)
 
     def build(self, corpus_embeddings):

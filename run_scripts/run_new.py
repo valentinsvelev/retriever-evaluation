@@ -1,16 +1,15 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-
-
-# In[ ]:
-
 
 from transformers import set_seed
 from huggingface_hub import login
@@ -33,9 +32,11 @@ from src.run import run
 from src.misc import create_folder_structure, get_dataset_variants
 
 
-# In[ ]:
+# -----------------------------
+# --- SETUP -------------------
+# -----------------------------
 
-
+# Overwrite model parameters to avoid errors
 try:
     from transformers.cache_utils import DynamicCache
     if not hasattr(DynamicCache, "get_usable_length"):
@@ -61,15 +62,10 @@ try:
 except Exception as e:
     print("[warn] DynamicCache patch failed:", e)
 
-
-# In[ ]:
-
-
 # Set device
 if torch.cuda.is_available():
     n_gpus = torch.cuda.device_count()
     print(f"Found {n_gpus} CUDA device(s)")
-    # Use generic "cuda" so DataParallel / device_map can work
     DEVICE = torch.device("cuda")
 else:
     DEVICE = torch.device("cpu")
@@ -88,32 +84,25 @@ hf_key = os.getenv("HUGGINGFACE_KEY")
 # Log into HF for locked models
 login(hf_key)
 
-
-# In[ ]:
-
-
+# Create folder structure and download the datasets
 create_folder_structure(only_local=True)
-
-
-# In[ ]:
-
-
 handler = DataHandler(
     sources=DATASETS,
     folder="data/raw"
 )
-
 handler.save()
 
 
-# In[ ]:
+# -----------------------------
+# --- EVALUATION --------------
+# -----------------------------
 
-
+# Loop over models and datasets and evaluate
 results_per_query = {}
-runs_cache = {} # {(dataset, model): {"og": {...}, "changed": {...}}}
+runs_cache = {}
 
 if __name__ == "__main__":
-    for model in ["gemma", "bge"]:
+    for model in [""]:
         for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)
@@ -135,7 +124,7 @@ if __name__ == "__main__":
                     qrels_ch = handler.read(dataset, variant="changed")[2]
                     qrels_og_df = pd.DataFrame(list(qrels_og))
                     qrels_ch_df = pd.DataFrame(list(qrels_ch))
-
+    
                     # raw runs for p-MRR
                     run_og = bucket["og"]["results"]
                     run_ch = bucket["changed"]["results"]
@@ -183,19 +172,3 @@ if __name__ == "__main__":
                     with open(combined_path, "w", encoding="utf-8") as f:
                         json.dump(combined_report, f, indent=2)
                     print(f"💾 Saved combined report to {combined_path}")
-
-
-# In[ ]:
-
-
-# !PYPROJECT_NAME="master_thesis" PYPROJECT_VERSION="0.0.1" python -c 'import sys,subprocess,re,os; fr=subprocess.check_output([sys.executable,"-m","pip","freeze","--disable-pip-version-check"], text=True); ansi=re.compile(r"\x1b\[[0-9;]*[A-Za-z]"); deps=sorted([ln.strip() for ln in ansi.sub("",fr).splitlines() if ln.strip() and ln.split("==")[0].split("@")[0].split("[")[0].lower() not in {"pip","setuptools","wheel","pkg-resources","distribute"}], key=str.lower); name=os.environ.get("PYPROJECT_NAME","my-project"); ver=os.environ.get("PYPROJECT_VERSION","0.1.0"); rp=f">={sys.version_info.major}.{sys.version_info.minor}"; lines=["[build-system]","requires = [\"hatchling>=1.0.0\"]","build-backend = \"hatchling.build\"","", "[project]", f"name = \"{name}\"", f"version = \"{ver}\"", f"requires-python = \"{rp}\"", "dependencies = ["]; lines += [f"    \"{d}\"," for d in deps[:-1]] + ([f"    \"{deps[-1]}\"" ] if deps else []); lines.append("]"); open("pyproject.toml","w",encoding="utf-8").write("\n".join(lines)+"\n")'
-
-
-# In[ ]:
-
-
-# import sys, subprocess, pathlib
-# out = pathlib.Path.cwd() / "requirements_new.txt"
-# with open(out, "w") as f:
-#     subprocess.check_call([sys.executable, "-m", "pip", "freeze"], stdout=f)
-

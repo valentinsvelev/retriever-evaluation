@@ -1,5 +1,14 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import torch
-from transformers import AutoModel, AutoTokenizer, AutoConfig#, BitsAndBytesConfig
+from transformers import AutoModel, AutoTokenizer, AutoConfig
 from peft import PeftModel, PeftConfig
 import pandas as pd
 import numpy as np

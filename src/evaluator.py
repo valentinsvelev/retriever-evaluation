@@ -1,3 +1,12 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import math
 import pandas as pd
 import numpy as np
@@ -7,7 +16,9 @@ from typing import Dict, Optional, Tuple
 
 
 class Evaluator:
-    """Handles the evaluation of retrieval results using ir_measures."""
+    """
+    Handles the evaluation of retrieval results using ir_measures.
+    """
 
     def __init__(self, dataset_name, skip_self_matches="auto"):
         """
@@ -96,12 +107,11 @@ class Evaluator:
         qrels_changed_df: pd.DataFrame,
         run_og: dict[str, dict[str, float]],
         run_changed: dict[str, dict[str, float]],
-        k: int | None = None,  # optional cutoff for ranks; if None, use full run
+        k: int | None = None,
     ) -> tuple[float, dict[str, float]]:
         """
         Compute FollowIR p-MRR (pairwise MRR) between an original and changed run.
         Returns (macro_avg_p_mrr, per_query_p_mrr).
-        Based on Weller et al. 2025 (FollowIR).  See paper §3.1–3.2. 
         """
 
         # --- normalize inputs

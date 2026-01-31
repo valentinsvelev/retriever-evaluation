@@ -6,5 +6,6 @@
 !run_scripts/**
 !requirements
 !requirements/**
+!README.md
 
 **/__pycache__

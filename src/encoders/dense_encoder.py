@@ -1,3 +1,12 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import os
 import sys
 import subprocess
@@ -25,6 +34,7 @@ if not os.path.exists("tart"):
 
 from tart.TART.src.modeling_enc_t5 import EncT5ForSequenceClassification
 from tart.TART.src.tokenization_enc_t5 import EncT5Tokenizer
+
 
 
 def _has_tokenizer_sep(tokenizer):
@@ -220,7 +230,7 @@ def generate_pseudo_docs_for_query_expansion(query_ids: list, query_texts: list,
             padding=True,
             truncation=True,
             max_length=768,
-        )#.to(device)
+        )
 
         with torch.no_grad():
             outputs = model.generate(
@@ -228,8 +238,6 @@ def generate_pseudo_docs_for_query_expansion(query_ids: list, query_texts: list,
                 max_new_tokens=128,
                 do_sample=True,
                 temperature=1,
-                #top_p=0.95,
-                #repetition_penalty=1.1,
                 eos_token_id=tokenizer.eos_token_id,
             )
 
@@ -237,7 +245,6 @@ def generate_pseudo_docs_for_query_expansion(query_ids: list, query_texts: list,
         gen_tokens = outputs[:, inputs["input_ids"].shape[1]:]
         decoded = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
         decoded = [d.strip() for d in decoded]
-        # all_outputs.extend(decoded)
 
         for qid, q, pseudo in zip(batch_qids, batch_queries, decoded):
             out_dict[str(qid)] = {"query": q, "pseudo_doc": pseudo}
@@ -247,11 +254,13 @@ def generate_pseudo_docs_for_query_expansion(query_ids: list, query_texts: list,
         json.dump(out_dict, f, ensure_ascii=False)
 
     print(f"Hypothetical documents saved to '{path}'.")
-    return out_dict #all_outputs
+    return out_dict
 
 
 class DenseEncoder:
-    """Handles loading and encoding text for various model types, and TART-full reranking."""
+    """
+    Handles loading and encoding text for various model types, and TART reranking.
+    """
     def __init__(self, model_name, config, device):
         self.model_name = model_name
         self.config = config or {}
@@ -279,7 +288,9 @@ class DenseEncoder:
         
         self._dual_family = None
 
-    # -------------------- LOADING --------------------
+    # ----------------------------------------------------------------
+    # ----------------------- MODEL LOADING --------------------------
+    # ----------------------------------------------------------------
     def _load_model(self):
         if isinstance(self.model_name, dict):
             self._handler_type = 'dual_encoder'
@@ -322,7 +333,6 @@ class DenseEncoder:
             if "qwen3" in name or "e5-mistral" in name:
                 model_kwargs = {
                     "trust_remote_code": True,
-                    #"quantization_config": self.bnb_cfg,
                     "load_in_4bit": True
                 }
                 print("Quantization applied")
@@ -361,12 +371,9 @@ class DenseEncoder:
     def _load_manual_transformer(self):
         name = str(self.model_name).lower()
 
-        # You can also toggle this via self.config["quantize"] = True/False
         want_quant = self.config.get("quantize")
         if want_quant is None:
             want_quant = (self.device.type == "cuda" and any(x in name for x in ["4b", "7b", "8b", "xl", "xxl", "gritlm", "sfr"]))
-        
-        # config = AutoConfig.from_pretrained(name, trust_remote_code=True)
 
         if want_quant:
             print("Loading quantized model.")
@@ -436,7 +443,6 @@ class DenseEncoder:
         peft_cfg = PeftConfig.from_pretrained(peft_id)
         base_id = peft_cfg.base_model_name_or_path
         
-        #gpu_idx = (self.device.index if self.device.index is not None else 0)
         base = AutoModel.from_pretrained(
             base_id,
             trust_remote_code=True,
@@ -459,12 +465,8 @@ class DenseEncoder:
         model = PeftModel.from_pretrained(base, peft_id)
         model = model.merge_and_unload()
         
-        # if "promptriever" in self.model_name:
         model.config.max_length = 512
         tokenizer.model_max_length = 512
-        # elif "repllama" in self.model_name:
-        #     model.config.max_length = 2048
-        #     tokenizer.model_max_length = 2048
 
         self.model = model
         self.model.eval()

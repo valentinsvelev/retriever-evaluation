@@ -1,3 +1,12 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import os
 import json
 from typing import List, Tuple, Dict, Any, Iterable, Optional
@@ -8,18 +17,21 @@ import datasets as hf_datasets
 
 
 class DataHandler:
+    """
+    Handles the downloading, saving, and efficient loading of all datasets.
+    
+    sources: list like ["irds:beir/trec-covid", "hf:jhu-clsp/news21-instructions"]
+    folder: root directory; each dataset (and variant) gets its own subfolder
+    """
+    
     def __init__(self, sources: List[str], folder: str, compression: str = "zstd"):
-        """
-        sources: list like ["irds:beir/trec-covid", "hf:jhu-clsp/news21-instructions"]
-        folder: root directory; each dataset (and variant) gets its own subfolder
-        """
         self.sources = sources
         self.folder = folder
         self.compression = compression
 
-    # ---------------------------
+    # -------
     # Helpers
-    # ---------------------------
+    # -------
     def _pick_col(self, df: pd.DataFrame, candidates: List[str], new_name: str) -> pd.Series:
         for c in candidates:
             if c in df.columns:
@@ -54,9 +66,9 @@ class DataHandler:
         else:
             raise ValueError(f"Unexpected HF dataset type: {type(obj)}")
 
-    # ---------------------------
+    # ----------------------------
     # Load + normalize one dataset
-    # ---------------------------
+    # ----------------------------
     def _load_one(self, source: str) -> Dict[str, Dict[str, pd.DataFrame]]:
         """
         Returns a dict mapping variant -> splits dict (each with keys: docs, queries, qrels).
@@ -162,9 +174,9 @@ class DataHandler:
             }
         }
 
-    # ---------------------------
+    # ----------------------------------------------
     # Save each dataset separately (fast early-skip)
-    # ---------------------------
+    # ----------------------------------------------
     def save(self):
         for src in self.sources:
             typ, name = src.split(":", 1)
@@ -253,13 +265,13 @@ class DataHandler:
                     json.dump({"source": src}, f, indent=2)
                 print(f"💾 Saved {src} to {subdir}")
 
-    # ---------------------------
-    # Read lazily (per dataset)
-    # ---------------------------
+    # ---------------
+    # Read in batches
+    # ---------------
     def read(
         self,
         dataset: str,
-        variant: Optional[str] = None,  # for jhu-clsp: "og" or "changed"
+        variant: Optional[str] = None,
         yield_batches: bool = False
     ) -> Tuple[Iterable[Dict[str, Any]], Iterable[Dict[str, Any]], Iterable[Dict[str, Any]]]:
         typ, name = dataset.split(":", 1)

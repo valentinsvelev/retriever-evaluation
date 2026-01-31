@@ -1,3 +1,12 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import os
 import sys
 import json
@@ -5,12 +14,10 @@ import re
 import math
 import traceback
 from typing import Dict, Any, Iterable, Tuple, List, Optional
-
 import torch
 import torch.multiprocessing as mp
 import pandas as pd
 from tqdm import tqdm
-
 from pyserini.encode import (
     SpladeQueryEncoder,
     UniCoilQueryEncoder,
@@ -21,7 +28,6 @@ from transformers import (
     T5Tokenizer, T5ForConditionalGeneration,
     AutoTokenizer, AutoModelForTokenClassification
 )
-
 from src.models.sparta import SPARTA
 
 
@@ -511,6 +517,9 @@ def _worker_doc2query(rank: int, world: int, device: str, in_path: str, part_pat
 # -------------------------
 
 class SparseEncoder:
+    """
+    ...
+    """
     def __init__(self, model_name, model_key, device):
         self.model_name = model_name
         self.model_key = model_key
@@ -522,9 +531,6 @@ class SparseEncoder:
             self.query_encoder = UniCoilQueryEncoder("castorini/unicoil-noexp-msmarco-passage", device=device)
         if "sparta" in model_name:
             self.query_encoder = SPARTA(model_name, device=self.device)
-
-    # Keep your build_d2q_docs if you still need the DataFrame variant
-    # (but multi-GPU doc2query corpus encoding now lives in encode() too).
 
     def encode(self, corpus_dir: str, encoding_dir: str):
         if self.model_name == "bm25":
@@ -611,8 +617,6 @@ class SparseEncoder:
         if "doc2query" in name:
             from src.configs.models import sparse_models
             model_ckpt = sparse_models["doc2query"]["model_path"]
-
-            # model_ckpt = self.model_name
 
             _spawn_multi_gpu(
                 mode="doc2query",

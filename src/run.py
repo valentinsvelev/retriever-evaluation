@@ -1,3 +1,12 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import pandas as pd
 import numpy as np
 import torch
@@ -10,7 +19,6 @@ import shutil
 from tqdm import tqdm
 import pyarrow.parquet as pq
 from pyserini.search.lucene import LuceneSearcher, LuceneImpactSearcher
-
 from src.configs.models import MODELS
 from src.encoders.dense_encoder import DenseEncoder, generate_docs_for_query_expansion, generate_pseudo_docs_for_query_expansion
 from src.encoders.sparse_encoder import SparseEncoder
@@ -21,13 +29,14 @@ from src.data_handler import DataHandler
 from src.models.colbert_ragatouille import ColBERT
 from src.misc import prepare_pyserini_corpus, save_dense_embeddings, load_dense_embeddings
 
-
+# -------
+# Helpers
+# -------
 DATASET_MAPPING = {
     "irds:msmarco-passage/dev/small": "irds:msmarco-passage/dev/small",
     "irds:msmarco-passage/trec-dl-2019/judged": "irds:msmarco-passage/dev/small",
     "irds:msmarco-passage/trec-dl-2020/judged": "irds:msmarco-passage/dev/small",
 }
-
 
 def has_all_4_shards(enc_dir: str) -> bool:
     shard_files = [
@@ -39,11 +48,13 @@ def has_all_4_shards(enc_dir: str) -> bool:
         for f in shard_files
     )
 
-
 def make_q_plus(q, pseudo, repeat=5):
     return ((" " + q.strip()) * repeat).strip() + " " + pseudo.strip()
 
 
+# -------------
+# Main function
+# -------------
 def run(
     model_key: str, 
     handler: DataHandler,
@@ -53,6 +64,9 @@ def run(
     save_report: bool = False,
     archive: bool = True
     ):
+    """
+    
+    """
 
     # For all datasets
     dataset_id = ds

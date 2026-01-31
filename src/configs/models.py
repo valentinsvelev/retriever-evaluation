@@ -1,7 +1,16 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
+# --------------------------------
+# --- Sparse retrievers -----------
+# --------------------------------
 sparse_models = {
-    # -------------------------
-    # --- Sparse retrievers ---
-    # -------------------------
     "bm25": {},
     "doc2query": {"model_path": "doc2query/msmarco-t5-base-v1"},
     "deepct": {"model_path": "macavaney/deepct"},
@@ -10,10 +19,10 @@ sparse_models = {
     "splade": {"model_path": "naver/splade-v3"}, # naver/splade-cocondenser-ensembledistil
 }
 
+# --------------------------------
+# --- Dense retrievers -----------
+# --------------------------------
 dense_models = {
-    # ------------------------
-    # --- Dense retrievers ---
-    # ------------------------
     "dpr": {
         "model_path_ctx": "facebook/dpr-ctx_encoder-multiset-base", # "facebook/dpr-ctx_encoder-single-nq-base",
         "model_path_q": "facebook/dpr-question_encoder-multiset-base", # "facebook/dpr-question_encoder-single-nq-base",
@@ -97,13 +106,13 @@ dense_models = {
     },
 }
 
+# -----------------------------------
+# --- Intruction-tuned retrievers ---
+# -----------------------------------
 instruction_tuned_retrievers = {
-    # -----------------------------------
-    # --- Intruction-tuned retrievers ---
-    # -----------------------------------
-    "tart": {
-        "model_path": "facebook/tart-full-flan-t5-xl" # facebook/tart-full-t0-3b
-    },
+    # "tart": {
+    #     "model_path": "facebook/tart-full-flan-t5-xl" # facebook/tart-full-t0-3b
+    # },
     "llm2vec": {
         "model_path": "McGill-NLP/LLM2Vec-Meta-Llama-31-8B-Instruct-mntp",
         "pooling": "last_token",
@@ -134,14 +143,12 @@ instruction_tuned_retrievers = {
     },
 }
 
+# --------------------------------
+# --- General embedding models ---
+# --------------------------------
 generalist_embedders = {
-    # --------------------------------
-    # --- General embedding models ---
-    # --------------------------------
     "bge": {
         "model_path": "BAAI/bge-large-en-v1.5",
-        #"query_instruction": "Represent this sentence for searching relevant passages: ",
-        #"doc_instruction": None,
         "normalize": True
     },
     "e5": {
@@ -214,16 +221,16 @@ generalist_embedders = {
     #     "doc_instruction": "",
     #     "normalize": True
     # },
-    "granite": {
-        "model_path": "ibm-granite/granite-embedding-english-r2",
-        "pooling": "cls",
-        "query_instruction": None,
-        "doc_instruction": None,
-        "normalize": True
-    },
-    "drama": {
-        "model_path": "facebook/drama-1b"
-    },
+    # "granite": {
+    #     "model_path": "ibm-granite/granite-embedding-english-r2",
+    #     "pooling": "cls",
+    #     "query_instruction": None,
+    #     "doc_instruction": None,
+    #     "normalize": True
+    # },
+    # "drama": {
+    #     "model_path": "facebook/drama-1b"
+    # },
 }
 
 MODELS = {**sparse_models, **dense_models, **instruction_tuned_retrievers, **generalist_embedders}

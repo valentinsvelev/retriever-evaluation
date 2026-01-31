@@ -1,7 +1,16 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import torch
 import torch.nn.functional as F
 from torch.nn import DataParallel
-from transformers import AutoModel, AutoTokenizer#, BitsAndBytesConfig
+from transformers import AutoModel, AutoTokenizer
 import pandas as pd
 import numpy as np
 import time

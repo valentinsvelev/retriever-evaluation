@@ -1,3 +1,12 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import os
 import json
 import pandas as pd
@@ -12,6 +21,9 @@ import h5py
 
 
 def create_folder_structure(only_local: bool = False):
+    """
+    
+    """
     BASE_DIR = "/dataHDD1"
 
     hdd_paths = [
@@ -119,7 +131,7 @@ def load_dense_embeddings_hdf5(path, as_tensor=False):
     Load dense embeddings and document IDs from an HDF5 file.
     """
     with h5py.File(path, "r") as f:
-        embeddings = f["embeddings"][:]          # (N, D), float16
+        embeddings = f["embeddings"][:] # (N, D), float16
         doc_ids = f["doc_ids"][:]
 
     # Decode byte strings -> Python strings

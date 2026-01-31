@@ -1,21 +1,18 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
-
-# In[ ]:
-
-
 import json
 import pandas as pd
-#from tqdm import tqdm
-#from pyserini.search.faiss import FaissSearcher
 from transformers import set_seed
 from huggingface_hub import login
 from dotenv import load_dotenv
@@ -34,9 +31,11 @@ from src.configs.models import MODELS
 from src.misc import create_folder_structure, get_dataset_variants
 
 
-# In[ ]:
+# -----------------------------
+# --- SETUP -------------------
+# -----------------------------
 
-
+# Overwrite model parameters to avoid errors
 try:
     from transformers.cache_utils import DynamicCache
     if not hasattr(DynamicCache, "get_usable_length"):
@@ -62,10 +61,6 @@ try:
 except Exception as e:
     print("[warn] DynamicCache patch failed:", e)
 
-
-# In[ ]:
-
-
 # Set device
 if torch.cuda.is_available():
     n_gpus = torch.cuda.device_count()
@@ -89,35 +84,25 @@ hf_key = os.getenv("HUGGINGFACE_KEY")
 # Log into HF for locked models
 login(hf_key)
 
-
-# In[ ]:
-
-
+# Create folder structure and download the datasets
 create_folder_structure(only_local=True)
-
-
-# In[ ]:
-
-
 handler = DataHandler(
     sources=DATASETS,
     folder="data/raw"
 )
-
 handler.save()
 
 
-# In[ ]:
+# -----------------------------
+# --- EVALUATION --------------
+# -----------------------------
 
-
+# Load the model
 from src.models.repllama import RepLLaMAEncoder
 model = "repllama"
 encoder = RepLLaMAEncoder(model_key=model, config=MODELS[model], device=DEVICE)
 
-
-# In[ ]:
-
-
+# Loop over datasets and evaluate
 results_per_query = {model: {}}
 runs_cache = {}
 
@@ -197,19 +182,3 @@ if __name__ == "__main__":
                     json.dump(combined_report, f, indent=2)
     
                 print(f"💾 Saved combined report to {combined_path}")
-
-
-# In[ ]:
-
-
-# !PYPROJECT_NAME="master_thesis" PYPROJECT_VERSION="0.0.1" python -c 'import sys,subprocess,re,os; fr=subprocess.check_output([sys.executable,"-m","pip","freeze","--disable-pip-version-check"], text=True); ansi=re.compile(r"\x1b\[[0-9;]*[A-Za-z]"); deps=sorted([ln.strip() for ln in ansi.sub("",fr).splitlines() if ln.strip() and ln.split("==")[0].split("@")[0].split("[")[0].lower() not in {"pip","setuptools","wheel","pkg-resources","distribute"}], key=str.lower); name=os.environ.get("PYPROJECT_NAME","my-project"); ver=os.environ.get("PYPROJECT_VERSION","0.1.0"); rp=f">={sys.version_info.major}.{sys.version_info.minor}"; lines=["[build-system]","requires = [\"hatchling>=1.0.0\"]","build-backend = \"hatchling.build\"","", "[project]", f"name = \"{name}\"", f"version = \"{ver}\"", f"requires-python = \"{rp}\"", "dependencies = ["]; lines += [f"    \"{d}\"," for d in deps[:-1]] + ([f"    \"{deps[-1]}\"" ] if deps else []); lines.append("]"); open("pyproject.toml","w",encoding="utf-8").write("\n".join(lines)+"\n")'
-
-
-# In[ ]:
-
-
-# import sys, subprocess, pathlib
-# out = pathlib.Path.cwd() / "requirements_llm2vec.txt"
-# with open(out, "w") as f:
-#     subprocess.check_call([sys.executable, "-m", "pip", "freeze"], stdout=f)
-

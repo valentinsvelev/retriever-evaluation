@@ -1,5 +1,12 @@
-#!/usr/bin/env python
-# coding: utf-8
+################################################################################
+# Title
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import os
 import sys
 
@@ -68,7 +75,7 @@ def main():
     results_per_query = {}
     runs_cache = {}
 
-    for model in ["colbert"]:
+    for model in ["doc2query"]:
         for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)

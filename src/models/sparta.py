@@ -1,5 +1,14 @@
+################################################################################
+# Title
+#
+# Description: ...
+#
 # Adapted from https://github.com/nreimers/beir-sparta/blob/main/SPARTA.py
 # and https://github.com/beir-cellar/beir/blob/main/beir/retrieval/models/sparta.py
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
 
 import torch
 from tqdm import tqdm
