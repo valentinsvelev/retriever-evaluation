@@ -1,7 +1,18 @@
+################################################################################
+# mappings.py
+#
+# Description: ...
+#
+# Author: Valentin Velev
+# Last updated: 31.01.2026
+################################################################################
+
 import pandas as pd
 import numpy as np
+import string
 from typing import Optional
-from src.analysis.mappings import DATASET_SIZES, MODEL_FAMILIES, MODEL_FAMILIES_PRETTY, MODEL_NAMES_PRETTY
+from src.data_handler import DataHandler
+from src.analysis.mappings import MODEL_FAMILIES, MODEL_FAMILIES_PRETTY, MODEL_NAMES_PRETTY
 
 
 def bootstrap_mean_stats(values, n_boot=100000, ci=0.95, random_state=42):
@@ -111,17 +122,92 @@ def label_to_dataset_id(label: str) -> Optional[str]:
     return dataset_id
 
 
-def label_to_dataset_id_for_sizes(label: str) -> Optional[str]:
-    ds = label_to_dataset_id(label)
-    if ds is None:
-        return None
+PUNCT_TABLE = str.maketrans("", "", string.punctuation)
 
-    if ds in DATASET_SIZES:
-        return ds
+def count_words_no_punct(text: str) -> int:
+    """
+    Removes punctuation, splits on whitespace, counts tokens.
+    """
+    if not isinstance(text, str):
+        return 0
+    cleaned = text.translate(PUNCT_TABLE)
+    # You could lower() if you want, but it's not required for counting
+    return len(cleaned.split())
 
-    if ds.endswith("/all"):
-        parent = ds.rsplit("/", 1)[0]
-        if parent in DATASET_SIZES:
-            return parent
 
-    return ds
+def compute_avg_lengths(data_handler: DataHandler, dataset: str, variant=None):
+    doc_iter, query_iter, _ = data_handler.read(dataset, variant)
+
+    # --- Docs ---
+    doc_total, doc_count = 0, 0
+    for row in doc_iter:
+        txt = row.get("text")
+        n = count_words_no_punct(txt)
+        doc_total += n
+        doc_count += 1
+    avg_doc = doc_total / doc_count if doc_count else np.nan
+
+    # --- Queries ---
+    query_total, query_count = 0, 0
+    for row in query_iter:
+        txt = row.get("text")
+        n = count_words_no_punct(txt)
+        query_total += n
+        query_count += 1
+    avg_query = query_total / query_count if query_count else np.nan
+
+    return avg_doc, avg_query
+
+
+def compute_all_avg_lengths(handler: DataHandler, dataset_ids):
+    results = {}
+
+    for ds in dataset_ids:
+        is_jhu = ("jhu-clsp" in ds.lower())
+        results[ds] = {}
+
+        if is_jhu:
+            # variants: og and changed
+            for variant in ["og", "changed"]:
+                try:
+                    avg_doc, avg_query = compute_avg_lengths(handler, ds, variant=variant)
+                    results[ds][variant] = {
+                        "avg_doc_len": avg_doc,
+                        "avg_query_len": avg_query,
+                    }
+                except Exception as e:
+                    # dataset might not have both variants
+                    print(f"⚠️ Skipping {ds} variant={variant}: {e}")
+        else:
+            # normal dataset: single base split
+            try:
+                avg_doc, avg_query = compute_avg_lengths(handler, ds, variant=None)
+                results[ds]["base"] = {
+                    "avg_doc_len": avg_doc,
+                    "avg_query_len": avg_query,
+                }
+            except Exception as e:
+                print(f"⚠️ Skipping {ds}: {e}")
+
+    return results
+
+
+def get_benchmark(dataset_id):
+    dataset_id = dataset_id.lower()
+    if "jhu-clsp" in dataset_id:
+        return "FollowIR"
+    elif "kaist-ai" in dataset_id:
+        return "InstructIR"
+    elif "beir" in dataset_id:
+        return "BEIR"
+    elif "lotte" in dataset_id:
+        return "LoTTE"
+    elif "trec-dl-2019" in dataset_id:
+        return "TREC-DL 2019"
+    elif "trec-dl-2020" in dataset_id:
+        return "TREC-DL 2020"
+    elif "msmarco-passage" in dataset_id:
+        return "MS MARCO"
+    else:
+        print("UNKNOWN")
+        return "UNKNOWN"

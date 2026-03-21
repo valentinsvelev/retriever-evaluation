@@ -21,9 +21,6 @@ import h5py
 
 
 def create_folder_structure(only_local: bool = False):
-    """
-    
-    """
     BASE_DIR = "/dataHDD1"
 
     hdd_paths = [

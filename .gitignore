@@ -7,5 +7,6 @@
 !requirements
 !requirements/**
 !README.md
+!analysis_nb.ipynb
 
 **/__pycache__

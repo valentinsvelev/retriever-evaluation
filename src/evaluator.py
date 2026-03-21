@@ -18,18 +18,18 @@ from typing import Dict, Optional, Tuple
 class Evaluator:
     """
     Handles the evaluation of retrieval results using ir_measures.
-    """
-
-    def __init__(self, dataset_name, skip_self_matches="auto"):
-        """
-        skip_self_matches: "auto" | "always" | "never"
+    
+    dataset_name: ...
+    skip_self_matches: "auto" | "always" | "never"
             - "auto": skip qid==docid only if qrels say it's NOT relevant (safe default)
             - "always": always drop qid==docid from results
             - "never": keep everything
-        """
+    """
+
+
+    def __init__(self, dataset_name, skip_self_matches="auto"):
         self.dataset_name = dataset_name.lower()
         self.skip_self_matches = skip_self_matches
-        
         self.compute_robustness = ("kaist" in self.dataset_name)
 
         if "trec-dl" in self.dataset_name:
