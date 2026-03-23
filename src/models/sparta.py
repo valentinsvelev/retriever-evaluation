@@ -1,7 +1,9 @@
 ################################################################################
-# Title
+# sparta.py
 #
-# Description: ...
+# Description: Runs end-to-end retrieval experiments with SPARTA, including 
+# document/query embedding generation, FAISS indexing, search, evaluation, 
+# result/report saving, and optional artifact archiving.
 #
 # Adapted from https://github.com/nreimers/beir-sparta/blob/main/SPARTA.py
 # and https://github.com/beir-cellar/beir/blob/main/beir/retrieval/models/sparta.py

@@ -1,7 +1,10 @@
 ################################################################################
 # table_generator.py
 #
-# Description: Code for creating latex tables using the results.
+# Description: Generates aggregate and dataset-specific LaTeX result tables from 
+# evaluation outputs, including score aggregation across benchmarks, 
+# bootstrap-based standard error/z-score comparisons, and formatted reporting for 
+# publication-ready analysis.
 #
 # Author: Valentin Velev
 # Last updated: 14.02.2026

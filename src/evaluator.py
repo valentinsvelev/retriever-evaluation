@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# evaluator.py
 #
-# Description: ...
+# Description: Evaluates retrieval runs using dataset-specific metrics.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026
@@ -19,7 +19,7 @@ class Evaluator:
     """
     Handles the evaluation of retrieval results using ir_measures.
     
-    dataset_name: ...
+    dataset_name: Normalized name of the dataset
     skip_self_matches: "auto" | "always" | "never"
             - "auto": skip qid==docid only if qrels say it's NOT relevant (safe default)
             - "always": always drop qid==docid from results

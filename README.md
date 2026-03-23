@@ -6,8 +6,8 @@
         <!--<a href="#installation">Installation</a> |-->
         | <a href="#structure">Structure</a> |
         <a href="#reproducing-the-results">Reproducing the Results</a> |
-        <a href="#models">Models</a> |
-        <a href="#datasets">Datasets</a> |
+        <a href="#available-models">Available Models</a> |
+        <a href="#available-datasets">Available Datasets</a> |
         <!--<a href="https://huggingface.co/spaces/mteb/leaderboard?task=instructionretrieval">Leaderboard</a> |-->
         <a href="#citing">Citing</a> |
     <p>
@@ -27,7 +27,7 @@ This repository is organized as follows:
   - `configs/`: dataset, model, and instruction configurations.
   - `encoders/`: dense and sparse encoder abstractions.
   - `indexing/`: FAISS and Lucene indexing implementations.
-  - `models/`: model-specific retrieval wrappers.
+  - `models/`: model-specific wrappers.
   - `data_handler.py`: data loading and preprocessing.
   - `evaluator.py`: retrieval evaluation pipeline.
   - `misc.py`: shared utility functions.
@@ -55,7 +55,7 @@ To obtain the same experimental results as in our paper, you need to:
 
     where * is one of [old, new, llm2vec, nvembed].
 
-2. Run the Python scripts in `run_scripts`. You can use `run_scripts/run_*.py` scripts to evaluate each of the models on the datasets. Inside each script, at the top, you will find all available models and datasets that you can use in this particular script. You can also find them in `src/configs/models.py` You can either run the scripts normally:
+2. Run the Python scripts in `run_scripts`. You can use `run_scripts/run_*.py` scripts to evaluate each of the models on the datasets. The available dataset and model IDs are available in the file `available_models_and_datasets.txt`. You can also find them in `src/configs/models.py` You can either run the scripts normally:
 
     ```bash
     python run_*.py
@@ -69,11 +69,12 @@ To obtain the same experimental results as in our paper, you need to:
 
     where in both cases * is one of [base, gritlm, llm2vec, new, nvembed, repllama].
 
+    Note that for ColBERTv2, the file `src/models/colbert.py` should be run to reproduce the results.
 
-To obtain the same analysis results (e.g. (plots), you need to use the Jupyter Notebook `analysis_nb.ipynb`.
+To obtain the same analysis results (e.g., plots and tables), you need to use the Jupyter Notebook `analysis_nb.ipynb`.
 
 
-## Models
+## Available Models
 
 | Model | Hugging Face Model Checkpoint(s) | Paper |
 | ----- | -------------------------- | ----- |
@@ -113,7 +114,7 @@ To obtain the same analysis results (e.g. (plots), you need to use the Jupyter N
 
 Note: <sup>*</sup>Checkpoint of query/document generation model; <sup>&dagger;</sup>Commit **9d1613c**42e2f90050dc11daeb1a24919811fa2c5
 
-## Datasets
+## Available Datasets
 
 <table>
   <tr>

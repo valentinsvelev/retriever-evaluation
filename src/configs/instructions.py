@@ -1,7 +1,8 @@
 ################################################################################
-# Title
+# instructions.py
 #
-# Description: ...
+# Description: Defines dataset-specific instructions for each instruction-following
+# retrieval model.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

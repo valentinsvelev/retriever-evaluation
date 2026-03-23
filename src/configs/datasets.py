@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# datasets.py
 #
-# Description: ...
+# Description: Defines lists of datasets used in the project.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

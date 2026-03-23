@@ -1,7 +1,8 @@
 ################################################################################
-# Title
+# data_handler.py
 #
-# Description: ...
+# Description: Handles dataset ingestion, normalization, storage, and batched 
+# loading.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

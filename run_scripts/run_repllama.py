@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# run_repllama.py
 #
-# Description: ...
+# Description: Runs experiments using RepLLaMA.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

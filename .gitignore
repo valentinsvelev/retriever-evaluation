@@ -8,5 +8,6 @@
 !requirements/**
 !README.md
 !analysis_nb.ipynb
+!available_models_and_datasets.txt
 
 **/__pycache__

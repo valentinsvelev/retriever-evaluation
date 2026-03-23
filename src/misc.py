@@ -1,7 +1,9 @@
 ################################################################################
-# Title
+# misc.py
 #
-# Description: ...
+# Description: Provides utility functions for directory setup, corpus preparation, 
+# dataset variant detection, and saving/loading dense embedding caches in NumPy, 
+# JSONL, and HDF5 formats.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

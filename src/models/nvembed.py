@@ -1,7 +1,9 @@
 ################################################################################
-# Title
+# nvembed.py
 #
-# Description: ...
+# Description: Runs end-to-end retrieval experiments with Nv-Embed-v2, including 
+# document/query embedding generation, FAISS indexing, search, evaluation, 
+# result/report saving, and optional artifact archiving.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

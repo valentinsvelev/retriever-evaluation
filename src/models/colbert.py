@@ -1,7 +1,9 @@
 ################################################################################
-# Title
+# colbert.py
 #
-# Description: ...
+# Description: Runs the ColBERTv2 retrieval pipeline end to end, including 
+# dataset conversion from parquet to ColBERTv2 TSV format, index construction, 
+# search, evaluation, and report generation across datasets.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

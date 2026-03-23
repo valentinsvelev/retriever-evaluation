@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# run_nvembed.py
 #
-# Description: ...
+# Description: Runs experiments using NV-Embed-v2.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

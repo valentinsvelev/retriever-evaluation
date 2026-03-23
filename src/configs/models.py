@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# models.py
 #
-# Description: ...
+# Description: Defines retrieval models and their configs.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

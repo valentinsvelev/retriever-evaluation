@@ -1,7 +1,10 @@
 ################################################################################
-# mappings.py
+# misc.py
 #
-# Description: ...
+# Description: Provides shared utility functions for the analysis pipeline, 
+# including bootstrap statistics, latency computation, model/dataset name 
+# normalization, token-length estimation, average document/query length 
+# calculation, and benchmark label mapping.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

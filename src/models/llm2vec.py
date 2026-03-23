@@ -1,7 +1,9 @@
 ################################################################################
-# Title
+# llm2vec.py
 #
-# Description: ...
+# Description: Runs end-to-end retrieval experiments with LLM2Vec, including 
+# document/query embedding generation, FAISS indexing, search, evaluation, 
+# result/report saving, and optional artifact archiving.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

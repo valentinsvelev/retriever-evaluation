@@ -1,7 +1,9 @@
 ################################################################################
-# Title
+# run.py
 #
-# Description: ...
+# Description: Runs the project’s main retrieval and evaluation pipeline across 
+# sparse and dense models, handling corpus/query loading, encoding, indexing, 
+# search, evaluation, reporting, and optional artifact archiving/cleanup.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

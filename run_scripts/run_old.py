@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# run_old.py
 #
-# Description: ...
+# Description: Runs experiments using "old" models (all sparse and dense models).
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026
@@ -75,7 +75,7 @@ def main():
     results_per_query = {}
     runs_cache = {}
 
-    for model in ["doc2query"]:
+    for model in [""]: # enter all "old" model IDs here
         for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)

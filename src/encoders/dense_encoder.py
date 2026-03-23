@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# dense_encoder.py
 #
-# Description: ...
+# Description: Implements dense-retrieval document and query encoding utilities.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

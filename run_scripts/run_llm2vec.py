@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# run_llm2vec.py
 #
-# Description: ...
+# Description: Runs experiments using LLM2Vec.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

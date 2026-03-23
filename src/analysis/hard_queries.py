@@ -1,7 +1,9 @@
 ################################################################################
 # hard_queries.py
 #
-# Description: ...
+# Description: Computes hard queries from retrieval results by measuring the best 
+# relevant-document rank per query, selecting the hardest cases per dataset-model 
+# pair, and comparing model overlap with Jaccard metrics.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026
@@ -24,8 +26,8 @@ class HardQueries():
     """Determines hard queries based on raw rank of the relevant documents."""
     
     def __init__(self, data_handler: DataHandler):
-        self.max_depth = 1000
-        self.rel_min = 1
+        self.max_depth = 1000   # top-k
+        self.rel_min = 1        # minimum relevance
         self.data_handler = data_handler
 
 

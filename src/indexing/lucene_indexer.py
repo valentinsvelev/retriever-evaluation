@@ -1,7 +1,8 @@
 ################################################################################
-# Title
+# lucene_indexer.py
 #
-# Description: ...
+# Description: Creates index (Lucene/Anserini) for sparse models and performs 
+# top-k search.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

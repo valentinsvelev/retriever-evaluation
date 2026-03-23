@@ -1,7 +1,9 @@
 ################################################################################
 # mappings.py
 #
-# Description: ...
+# Description: Defines shared mappings and metadata for models and datasets, 
+# including display names, family assignments, colors/markers, annotation layouts, 
+# and row/column orders for figures and tables.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026

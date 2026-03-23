@@ -1,7 +1,8 @@
 ################################################################################
-# Title
+# run_new.py
 #
-# Description: ...
+# Description: Runs experiments using "new" models (all instruction-tuned and 
+# general-purpose embedding models).
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026
@@ -102,7 +103,7 @@ results_per_query = {}
 runs_cache = {}
 
 if __name__ == "__main__":
-    for model in [""]:
+    for model in [""]: # enter all "new" model IDs here
         for dataset in DATASETS:
             base_label = dataset.replace("/", "_").replace(":", "_")
             run_key = (dataset, model)

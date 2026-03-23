@@ -1,7 +1,7 @@
 ################################################################################
-# Title
+# run_gritlm.py
 #
-# Description: ...
+# Description: Runs experiments using GritLM.
 #
 # Author: Valentin Velev
 # Last updated: 31.01.2026
