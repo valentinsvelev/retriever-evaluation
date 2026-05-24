@@ -1,4 +1,4 @@
-<h1 align="center">A Systematic Cross-domain Evaluation of Document Retrievers</b></h1>
+<h1 align="center">A Systematic Multi-Domain Evaluation of Document Retrievers</b></h1>
 
 <h4 align="center">
     <p>
@@ -12,9 +12,6 @@
         <a href="#citing">Citing</a> |
     <p>
 </h4>
-
-Official repository for the paper [A Systematic Cross-domain Evaluation of Document Retrievers]().
-
 
 ## Structure
 
@@ -154,17 +151,3 @@ Note: <sup>*</sup>Checkpoint of query/document generation model; <sup>&dagger;</
     <td><a href="https://aclanthology.org/2025.naacl-long.597/">Weller et al. (2025)</a></td>
   </tr>
 </table>
-
-
-## Citing
-
-```bibtex
-@misc{velev2026reteval,
-    title={{A Systematic Cross-domain Evaluation of Document Retrievers}}, 
-    author={Valentin Velev and Andreas Spitz},
-    year={2026},
-    eprint={},
-    archivePrefix={arXiv},
-    primaryClass={cs.IR}
-}
-```
