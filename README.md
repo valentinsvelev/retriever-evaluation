@@ -9,7 +9,6 @@
         <a href="#available-models">Available Models</a> |
         <a href="#available-datasets">Available Datasets</a> |
         <!--<a href="https://huggingface.co/spaces/mteb/leaderboard?task=instructionretrieval">Leaderboard</a> |-->
-        <a href="#citing">Citing</a> |
     <p>
 </h4>
 
